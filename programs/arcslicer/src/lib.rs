@@ -49,6 +49,42 @@ pub mod arcslicer {
 
         Ok(())
     }
+
+    pub fn engine_trigger_slice(ctx: Context<TriggerEngine>) -> Result<()> {
+        let parent_state = &mut ctx.accounts.parent_state;
+        let child_slice = &mut ctx.accounts.child_slice;
+        
+        // Don't run if the whale is out of money
+        require!(parent_state.remaining_balance > 0, SlicerError::VaultEmpty);
+
+        let clock = Clock::get()?;
+
+        // --- THE "BLACK BOX" ENGINE LOGIC ---
+        // 1. Calculate a base chunk (e.g., 5% of the total deposit)
+        let base_chunk = parent_state.total_deposit / 20; 
+        
+        // 2. Add Jitter (Anti-Pattern Randomizer using the network timestamp)
+        // This makes every slice a slightly different size so bots can't track the Whale!
+        let jitter = (clock.unix_timestamp as u64) % (base_chunk / 2);
+        let mut slice_size = base_chunk + jitter;
+
+        // 3. Final round check: don't slice more than we have left
+        if slice_size > parent_state.remaining_balance {
+            slice_size = parent_state.remaining_balance;
+        }
+
+        // 4. Update the Parent Vault State
+        parent_state.remaining_balance = parent_state.remaining_balance.checked_sub(slice_size).unwrap();
+        parent_state.last_slice_time = clock.unix_timestamp;
+
+        // 5. Build the Bait (Initialize the Child Slice)
+        child_slice.parent = parent_state.key();
+        child_slice.amount_available = slice_size;
+        child_slice.price_per_token = 150_000_000; // Mock price: 150 USDC per SOL (assuming 6 decimals)
+        child_slice.is_filled = false;
+
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -88,6 +124,39 @@ pub struct InitializeSlicer<'info> {
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
+pub struct TriggerEngine<'info> {
+    #[account(mut)]
+    pub cranker: Signer<'info>,
+
+    // SECURITY OVERRIDE: Enforce that this is the exact PDA we created in the Escrow step
+    #[account(
+        mut,
+        seeds = [b"parent", parent_state.owner.as_ref()],
+        bump = parent_state.bump
+    )]
+    pub parent_state: Account<'info, SlicerParent>,
+
+    // ARCHITECTURE MAGIC: Use the current balance as a seed to mathematically guarantee 
+    // a brand new, unique PDA is generated for every single slice.
+    #[account(
+        init,
+        payer = cranker,
+        space = 8 + 32 + 8 + 8 + 1,
+        seeds = [b"slice", parent_state.key().as_ref(), parent_state.remaining_balance.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub child_slice: Account<'info, ChildSlice>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[error_code]
+pub enum SlicerError {
+    #[msg("The vault is empty, cannot slice any more funds.")]
+    VaultEmpty,
 }
 
 

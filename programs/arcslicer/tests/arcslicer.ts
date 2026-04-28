@@ -77,4 +77,52 @@ describe("ArcSlicer Escrow Testing", () => {
     
     console.log(`✅ Escrow verified! Locked ${vaultAccount.amount.toString()} tokens in the PDA.`);
   });
+
+
+  it("Successfully cranks the engine and generates a jittered slice!", async () => {
+    // 1. Read the state BEFORE the crank to get the exact seed
+    const parentBefore = await program.account.slicerParent.fetch(parentStatePda);
+    const balanceBefore = parentBefore.remainingBalance;
+
+    // 2. Derive the Child Slice PDA using TypeScript (Matching Rust's to_le_bytes)
+    const [childSlicePda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("slice"),
+        parentStatePda.toBuffer(),
+        balanceBefore.toArrayLike(Buffer, "le", 8), // Converts the u64 to Little Endian bytes!
+      ],
+      program.programId
+    );
+
+    // 3. Create a random "Keeper" bot to turn the crank
+    const cranker = anchor.web3.Keypair.generate();
+    
+    // Airdrop some gas to the bot so they can pay the rent for the new ChildSlice account
+    const sig = await provider.connection.requestAirdrop(cranker.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL);
+    await provider.connection.confirmTransaction(sig);
+
+    // 4. Turn the Crank
+    await program.methods
+      .engineTriggerSlice()
+      .accountsPartial({
+        cranker: cranker.publicKey,
+        parentState: parentStatePda,
+        childSlice: childSlicePda,
+      })
+      .signers([cranker])
+      .rpc();
+
+    // -- ASSERTIONS -- //
+
+    // Fetch the updated Parent Vault and the newly born Child Slice
+    const parentAfter = await program.account.slicerParent.fetch(parentStatePda);
+    const newChild = await program.account.childSlice.fetch(childSlicePda);
+
+    // Verify the balance went down
+    expect(parentAfter.remainingBalance.toNumber()).to.be.lessThan(balanceBefore.toNumber());
+    
+    console.log(`\n    ⚙️  Engine Cranked!`);
+    console.log(`    🔪 Jittered Slice Size: ${newChild.amountAvailable.toString()}`);
+    console.log(`    📉 Remaining Vault Balance: ${parentAfter.remainingBalance.toString()}`);
+  });
 });
