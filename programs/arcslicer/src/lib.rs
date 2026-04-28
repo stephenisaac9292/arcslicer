@@ -85,6 +85,54 @@ pub mod arcslicer {
 
         Ok(())
     }
+
+    pub fn fill_slice(ctx: Context<FillSlice>) -> Result<()> {
+        let child_slice = &mut ctx.accounts.child_slice;
+        let parent = &ctx.accounts.parent;
+
+        // 1. Calculate the exact USDC cost
+        // Math: (Amount of SOL in lamports * Price per Token) / 1,000,000,000
+        let cost_in_usdc = (child_slice.amount_available as u128)
+            .checked_mul(child_slice.price_per_token as u128)
+            .unwrap()
+            .checked_div(1_000_000_000)
+            .unwrap() as u64;
+
+        let cpi_program = ctx.accounts.token_program.key();
+
+        // 2. SWAP PART 1: Buyer pays USDC directly to the Whale
+        let usdc_transfer = Transfer {
+            from: ctx.accounts.buyer_target_account.to_account_info(),
+            to: ctx.accounts.whale_target_account.to_account_info(),
+            authority: ctx.accounts.buyer.to_account_info(), // Buyer signs this personally
+        };
+        let cpi_usdc_ctx = CpiContext::new(cpi_program, usdc_transfer);
+        token::transfer(cpi_usdc_ctx, cost_in_usdc)?;
+
+        // 3. SWAP PART 2: PDA Vault sends SOL to the Buyer
+        // Because the vault is owned by the program, the parent_state PDA must sign for it.
+        let owner_key = parent.owner;
+        let parent_bump = parent.bump;
+        let parent_seeds = &[
+            b"parent",
+            owner_key.as_ref(),
+            &[parent_bump],
+        ];
+        let signer = &[&parent_seeds[..]];
+
+        let sol_transfer = Transfer {
+            from: ctx.accounts.vault.to_account_info(),
+            to: ctx.accounts.buyer_sol_account.to_account_info(),
+            authority: parent.to_account_info(), // The Parent PDA is the authority!
+        };
+        let cpi_sol_ctx = CpiContext::new_with_signer(cpi_program, sol_transfer, signer);
+        token::transfer(cpi_sol_ctx, child_slice.amount_available)?;
+
+        // 4. Mark the slice as filled so it cannot be double-spent
+        child_slice.is_filled = true;
+
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -151,6 +199,31 @@ pub struct TriggerEngine<'info> {
     pub child_slice: Account<'info, ChildSlice>,
 
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct FillSlice<'info> {
+    #[account(mut)]
+    pub buyer: Signer<'info>,
+
+    #[account(mut)]
+    pub child_slice: Account<'info, ChildSlice>,
+
+    pub parent: Account<'info, SlicerParent>,
+
+    #[account(mut)]
+    pub vault: Account<'info, TokenAccount>,
+
+    #[account(mut)]
+    pub buyer_target_account: Account<'info, TokenAccount>,
+
+    #[account(mut)]
+    pub whale_target_account: Account<'info, TokenAccount>,
+
+    #[account(mut)]
+    pub buyer_sol_account: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
 }
 
 #[error_code]

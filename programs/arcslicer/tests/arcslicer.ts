@@ -125,4 +125,66 @@ describe("ArcSlicer Escrow Testing", () => {
     console.log(`    🔪 Jittered Slice Size: ${newChild.amountAvailable.toString()}`);
     console.log(`    📉 Remaining Vault Balance: ${parentAfter.remainingBalance.toString()}`);
   });
+
+  it("Successfully fills the slice (Atomic Swap)!", async () => {
+    // 1. Fetch the Child Slice we created in the last test
+    // We use .all() to grab the active slice floating on the network
+    const activeSlices = await program.account.childSlice.all();
+    const targetSlice = activeSlices[0]; 
+    const childSlicePda = targetSlice.publicKey;
+    const sliceData = targetSlice.account;
+
+    // Calculate the expected USDC cost
+    const costInUsdc = Math.floor((sliceData.amountAvailable.toNumber() * sliceData.pricePerToken.toNumber()) / 1_000_000_000);
+
+    // 2. Setup the Buyer
+    const buyer = anchor.web3.Keypair.generate();
+    const sig = await provider.connection.requestAirdrop(buyer.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL);
+    await provider.connection.confirmTransaction(sig);
+
+    // 3. Create Token Accounts for the Swap
+    // Buyer needs Mock USDC to pay, and a Mock SOL account to receive
+    const buyerUsdcAta = await getOrCreateAssociatedTokenAccount(provider.connection, buyer, mintUsdc, buyer.publicKey);
+    const buyerSolAta = await getOrCreateAssociatedTokenAccount(provider.connection, buyer, mintSol, buyer.publicKey);
+    
+    // Whale needs a Mock USDC account to receive the payment
+    const whaleUsdcAta = await getOrCreateAssociatedTokenAccount(provider.connection, whale, mintUsdc, whale.publicKey);
+
+    // Mint some starting USDC to the Buyer so they can afford the trade
+    await mintTo(provider.connection, buyer, mintUsdc, buyerUsdcAta.address, whale, costInUsdc * 2);
+
+    // 4. Execute the Atomic Swap
+    await program.methods
+      .fillSlice()
+      .accounts({
+        buyer: buyer.publicKey,
+        childSlice: childSlicePda,
+        parent: parentStatePda,
+        vault: vaultPda,
+        buyerTargetAccount: buyerUsdcAta.address,
+        whaleTargetAccount: whaleUsdcAta.address,
+        buyerSolAccount: buyerSolAta.address,
+        // tokenProgram is auto-resolved
+      })
+      .signers([buyer])
+      .rpc();
+
+    // -- ASSERTIONS -- //
+    
+    // Check the Buyer received the SOL
+    const finalBuyerSol = await getAccount(provider.connection, buyerSolAta.address);
+    expect(finalBuyerSol.amount.toString()).to.equal(sliceData.amountAvailable.toString());
+
+    // Check the Whale received the USDC
+    const finalWhaleUsdc = await getAccount(provider.connection, whaleUsdcAta.address);
+    expect(finalWhaleUsdc.amount.toString()).to.equal(costInUsdc.toString());
+
+    // Check the slice is marked as filled
+    const filledSlice = await program.account.childSlice.fetch(childSlicePda);
+    expect(filledSlice.isFilled).to.be.true;
+
+    console.log(`\n    🤝 Swap Complete!`);
+    console.log(`    💰 Buyer paid: ${costInUsdc} USDC`);
+    console.log(`    💎 Buyer received: ${finalBuyerSol.amount.toString()} SOL`);
+  });
 });
