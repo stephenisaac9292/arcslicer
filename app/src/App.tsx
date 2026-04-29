@@ -1,5 +1,6 @@
+import { useState } from 'react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
-import { useWallet } from '@solana/wallet-adapter-react';
+import { useAnchorWallet, useConnection } from '@solana/wallet-adapter-react';
 import {
   Activity,
   ArrowUpRight,
@@ -9,7 +10,29 @@ import {
   Slash,
   TimerReset,
 } from 'lucide-react';
+import * as anchor from '@coral-xyz/anchor';
+import { Keypair, PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
+import {
+  MINT_SIZE,
+  TOKEN_PROGRAM_ID,
+  createAssociatedTokenAccountInstruction,
+  createInitializeMintInstruction,
+  createMintToInstruction,
+  getAssociatedTokenAddressSync,
+} from '@solana/spl-token';
+import { Buffer } from 'buffer';
+import idl from './idl/arcslicer.json';
 import './App.css';
+
+declare global {
+  interface Window {
+    Buffer: typeof Buffer;
+  }
+}
+
+if (typeof window !== 'undefined' && !window.Buffer) {
+  window.Buffer = Buffer;
+}
 
 const tapeItems = [
   'Spread Integrity: 99.4%',
@@ -24,11 +47,182 @@ const telemetry = [
   { label: 'Cadence Stability', value: '99.1%', meter: '99%' },
 ];
 
+type InitializeCall = (totalDeposit: anchor.BN, urgencyLevel: number) => {
+  accounts: (accounts: Record<string, PublicKey>) => {
+    rpc: () => Promise<string>;
+  };
+};
+
+type ProgramMethods = {
+  initializeSlicer?: InitializeCall;
+  initialize_slicer?: InitializeCall;
+};
+
 function App() {
-  const { connected, publicKey } = useWallet();
-  const shortAddress = publicKey
-    ? `${publicKey.toBase58().slice(0, 4)}...${publicKey.toBase58().slice(-4)}`
+  const { connection } = useConnection();
+  const wallet = useAnchorWallet();
+  const [logs, setLogs] = useState<string[]>([]);
+  const [mintSol, setMintSol] = useState<PublicKey | null>(null);
+  const [mintUsdc, setMintUsdc] = useState<PublicKey | null>(null);
+
+  const assetsReady = mintSol !== null && mintUsdc !== null;
+
+  const shortAddress = wallet
+    ? `${wallet.publicKey.toBase58().slice(0, 4)}...${wallet.publicKey.toBase58().slice(-4)}`
     : null;
+
+  const shortKey = (key: PublicKey | null) => {
+    if (!key) {
+      return 'pending';
+    }
+
+    const value = key.toBase58();
+    return `${value.slice(0, 4)}...${value.slice(-4)}`;
+  };
+
+  const logInfo = (message: string) => {
+    setLogs((prev) => [...prev, message]);
+  };
+
+  const getProgram = (): anchor.Program<anchor.Idl> | null => {
+    if (!wallet) {
+      return null;
+    }
+
+    const provider = new anchor.AnchorProvider(connection, wallet, {
+      preflightCommitment: 'processed',
+    });
+
+    return new anchor.Program(idl as anchor.Idl, provider);
+  };
+
+  const handleSetupTokens = async () => {
+    if (!wallet) {
+      logInfo('ERROR: Connect wallet first.');
+      return;
+    }
+
+    try {
+      logInfo('INFO: Building atomic setup transaction...');
+
+      const newMintSol = Keypair.generate();
+      const newMintUsdc = Keypair.generate();
+      const lamports = await connection.getMinimumBalanceForRentExemption(MINT_SIZE);
+
+      const whaleSolAta = getAssociatedTokenAddressSync(newMintSol.publicKey, wallet.publicKey);
+      const whaleUsdcAta = getAssociatedTokenAddressSync(newMintUsdc.publicKey, wallet.publicKey);
+
+      const tx = new Transaction().add(
+        SystemProgram.createAccount({
+          fromPubkey: wallet.publicKey,
+          newAccountPubkey: newMintSol.publicKey,
+          space: MINT_SIZE,
+          lamports,
+          programId: TOKEN_PROGRAM_ID,
+        }),
+        createInitializeMintInstruction(newMintSol.publicKey, 9, wallet.publicKey, null),
+        SystemProgram.createAccount({
+          fromPubkey: wallet.publicKey,
+          newAccountPubkey: newMintUsdc.publicKey,
+          space: MINT_SIZE,
+          lamports,
+          programId: TOKEN_PROGRAM_ID,
+        }),
+        createInitializeMintInstruction(newMintUsdc.publicKey, 6, wallet.publicKey, null),
+        createAssociatedTokenAccountInstruction(
+          wallet.publicKey,
+          whaleSolAta,
+          wallet.publicKey,
+          newMintSol.publicKey,
+        ),
+        createAssociatedTokenAccountInstruction(
+          wallet.publicKey,
+          whaleUsdcAta,
+          wallet.publicKey,
+          newMintUsdc.publicKey,
+        ),
+        createMintToInstruction(newMintSol.publicKey, whaleSolAta, wallet.publicKey, 1000n * 10n ** 9n),
+      );
+
+      const latest = await connection.getLatestBlockhash('confirmed');
+      tx.feePayer = wallet.publicKey;
+      tx.recentBlockhash = latest.blockhash;
+
+      logInfo('INFO: Confirm transaction in wallet...');
+      const signedTx = await wallet.signTransaction(tx);
+      signedTx.partialSign(newMintSol, newMintUsdc);
+
+      const signature = await connection.sendRawTransaction(signedTx.serialize());
+      await connection.confirmTransaction(
+        {
+          signature,
+          blockhash: latest.blockhash,
+          lastValidBlockHeight: latest.lastValidBlockHeight,
+        },
+        'confirmed',
+      );
+
+      setMintSol(newMintSol.publicKey);
+      setMintUsdc(newMintUsdc.publicKey);
+      logInfo('OK: Mock assets created. 1000 mock SOL minted.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logInfo(`ERROR: Setup failed - ${message}`);
+      console.error(error);
+    }
+  };
+
+  const handleInitialize = async () => {
+    if (!wallet || !mintSol || !mintUsdc) {
+      logInfo('ERROR: Run Step 1 first to create mock assets.');
+      return;
+    }
+
+    const program = getProgram();
+    if (!program) {
+      logInfo('ERROR: Program not available.');
+      return;
+    }
+
+    try {
+      logInfo('INFO: Initializing vault with 1000 mock SOL...');
+
+      const [parentStatePda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('parent'), wallet.publicKey.toBuffer()],
+        program.programId,
+      );
+
+      const whaleSolAta = getAssociatedTokenAddressSync(mintSol, wallet.publicKey);
+      const totalDeposit = new anchor.BN(1000).mul(new anchor.BN(10).pow(new anchor.BN(9)));
+      const urgencyLevel = 2;
+
+      const methods = program.methods as unknown as ProgramMethods;
+      const initialize = methods.initializeSlicer ?? methods.initialize_slicer;
+
+      if (!initialize) {
+        throw new Error('initialize_slicer method not found in IDL.');
+      }
+
+      const tx = await initialize(totalDeposit, urgencyLevel)
+        .accounts({
+          whale: wallet.publicKey,
+          mint: mintSol,
+          targetMint: mintUsdc,
+          target_mint: mintUsdc,
+          parentState: parentStatePda,
+          parent_state: parentStatePda,
+          whaleTokenAccount: whaleSolAta,
+          whale_token_account: whaleSolAta,
+        })
+        .rpc();
+
+      logInfo(`OK: Vault initialized. Tx: ${tx.slice(0, 15)}...`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logInfo(`ERROR: Vault init failed - ${message}`);
+      console.error(error);
+    }
+  };
 
   return (
     <div className="app-shell">
@@ -108,7 +302,7 @@ function App() {
             </span>
           </div>
 
-          {connected ? (
+          {wallet ? (
             <div className="session-stack">
               <section className="session-card">
                 <h3>Wallet Linked</h3>
@@ -119,29 +313,52 @@ function App() {
                     <dd>{shortAddress}</dd>
                   </div>
                   <div>
-                    <dt>Network</dt>
-                    <dd>Localnet / Mainnet-ready</dd>
+                    <dt>Mock SOL Mint</dt>
+                    <dd>{shortKey(mintSol)}</dd>
                   </div>
                   <div>
-                    <dt>Execution Scope</dt>
-                    <dd>Strategy Tier 01</dd>
+                    <dt>Mock USDC Mint</dt>
+                    <dd>{shortKey(mintUsdc)}</dd>
                   </div>
                 </dl>
               </section>
 
               <section className="risk-card">
-                <h4>Guardrails</h4>
+                <h4>Runbook</h4>
                 <ul>
-                  <li>Max slippage threshold enforced</li>
-                  <li>Venue failover routing active</li>
-                  <li>Cadence watchdog synchronized</li>
+                  <li>Step 1 creates mock SOL and USDC mints + whale token accounts</li>
+                  <li>Step 2 initializes ArcSlicer with the generated mint accounts</li>
+                  <li>Logs below show every transaction stage and errors</li>
                 </ul>
               </section>
 
-              <button className="launch-btn" type="button">
-                Launch TWAP Session
-                <ArrowUpRight size={17} />
-              </button>
+              <div className="action-grid">
+                <button
+                  className="launch-btn setup-btn"
+                  type="button"
+                  onClick={handleSetupTokens}
+                  disabled={assetsReady}
+                >
+                  Step 1: Mint Mock Assets
+                  <ArrowUpRight size={17} />
+                </button>
+
+                <button
+                  className="launch-btn"
+                  type="button"
+                  onClick={handleInitialize}
+                  disabled={!assetsReady}
+                >
+                  Step 2: Initialize Vault
+                  <ArrowUpRight size={17} />
+                </button>
+              </div>
+
+              <div className="terminal-log" role="log" aria-live="polite">
+                {logs.length === 0
+                  ? 'System ready...'
+                  : logs.map((log, index) => <div key={`${log}-${index}`}>{log}</div>)}
+              </div>
             </div>
           ) : (
             <div className="session-stack">

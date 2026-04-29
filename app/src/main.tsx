@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import ReactDOM from 'react-dom/client';
+import './polyfills';
 import App from './App.tsx';
 import './index.css';
 
