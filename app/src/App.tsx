@@ -11,7 +11,7 @@ import {
   TimerReset,
 } from 'lucide-react';
 import * as anchor from '@coral-xyz/anchor';
-import { Keypair, PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
+import { PublicKey, Keypair, SystemProgram, Transaction, SYSVAR_RENT_PUBKEY } from '@solana/web3.js';
 import {
   MINT_SIZE,
   TOKEN_PROGRAM_ID,
@@ -30,7 +30,7 @@ declare global {
   }
 }
 
-if (typeof window !== 'undefined' && !window.Buffer) {
+if (typeof window !== 'undefined') {
   window.Buffer = Buffer;
 }
 
@@ -47,20 +47,58 @@ const telemetry = [
   { label: 'Cadence Stability', value: '99.1%', meter: '99%' },
 ];
 
-type InitializeCall = (totalDeposit: anchor.BN, urgencyLevel: number) => {
+type MethodCallBuilder = {
   accounts: (accounts: Record<string, PublicKey>) => {
     rpc: () => Promise<string>;
   };
 };
 
+type InitializeCall = (totalDeposit: anchor.BN, urgencyLevel: number) => MethodCallBuilder;
+type NoArgCall = () => MethodCallBuilder;
+
 type ProgramMethods = {
   initializeSlicer?: InitializeCall;
   initialize_slicer?: InitializeCall;
+  engineTriggerSlice?: NoArgCall;
+  engine_trigger_slice?: NoArgCall;
+  fillSlice?: NoArgCall;
+  fill_slice?: NoArgCall;
+};
+
+type ParentStateData = {
+  remainingBalance?: anchor.BN;
+  remaining_balance?: anchor.BN;
+};
+
+type ChildSliceData = {
+  isFilled?: boolean;
+  is_filled?: boolean;
+};
+
+type ChildSliceRecord = {
+  publicKey: PublicKey;
+  account: ChildSliceData;
+};
+
+type ProgramAccountsApi = {
+  slicerParent?: {
+    fetch: (address: PublicKey) => Promise<ParentStateData>;
+  };
+  slicer_parent?: {
+    fetch: (address: PublicKey) => Promise<ParentStateData>;
+  };
+  childSlice?: {
+    all: () => Promise<ChildSliceRecord[]>;
+  };
+  child_slice?: {
+    all: () => Promise<ChildSliceRecord[]>;
+  };
 };
 
 function App() {
   const { connection } = useConnection();
   const wallet = useAnchorWallet();
+
   const [logs, setLogs] = useState<string[]>([]);
   const [mintSol, setMintSol] = useState<PublicKey | null>(null);
   const [mintUsdc, setMintUsdc] = useState<PublicKey | null>(null);
@@ -96,6 +134,27 @@ function App() {
     return new anchor.Program(idl as anchor.Idl, provider);
   };
 
+  const runWithAccountsFallback = async (
+    builderFactory: () => MethodCallBuilder,
+    accountVariants: Record<string, PublicKey>[],
+  ) => {
+    let lastError: unknown;
+
+    for (const accounts of accountVariants) {
+      try {
+        return await builderFactory().accounts(accounts).rpc();
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    if (lastError instanceof Error) {
+      throw lastError;
+    }
+
+    throw new Error('All account variants failed.');
+  };
+
   const handleSetupTokens = async () => {
     if (!wallet) {
       logInfo('ERROR: Connect wallet first.');
@@ -103,7 +162,7 @@ function App() {
     }
 
     try {
-      logInfo('INFO: Building atomic setup transaction...');
+      logInfo('INFO: Building mock assets...');
 
       const newMintSol = Keypair.generate();
       const newMintUsdc = Keypair.generate();
@@ -142,6 +201,12 @@ function App() {
           newMintUsdc.publicKey,
         ),
         createMintToInstruction(newMintSol.publicKey, whaleSolAta, wallet.publicKey, 1000n * 10n ** 9n),
+        createMintToInstruction(
+          newMintUsdc.publicKey,
+          whaleUsdcAta,
+          wallet.publicKey,
+          10000n * 10n ** 6n,
+        ),
       );
 
       const latest = await connection.getLatestBlockhash('confirmed');
@@ -164,7 +229,7 @@ function App() {
 
       setMintSol(newMintSol.publicKey);
       setMintUsdc(newMintUsdc.publicKey);
-      logInfo('OK: Mock assets created. 1000 mock SOL minted.');
+      logInfo('OK: Assets created. You have 1000 mock SOL and 10000 mock USDC.');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logInfo(`ERROR: Setup failed - ${message}`);
@@ -173,8 +238,55 @@ function App() {
   };
 
   const handleInitialize = async () => {
-    if (!wallet || !mintSol || !mintUsdc) {
-      logInfo('ERROR: Run Step 1 first to create mock assets.');
+    const program = getProgram();
+    if (!program || !wallet || !mintSol || !mintUsdc) {
+      return;
+    }
+
+    try {
+      logInfo('🔒 Locking 1,000 SOL into ArcSlicer Escrow...');
+
+      const [parentStatePda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('parent'), wallet.publicKey.toBuffer()],
+        program.programId,
+      );
+      const [vaultPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('vault'), parentStatePda.toBuffer()],
+        program.programId,
+      );
+      const whaleSolAta = getAssociatedTokenAddressSync(mintSol, wallet.publicKey);
+
+      const methods = program.methods as unknown as ProgramMethods;
+      const initialize = methods.initializeSlicer;
+      if (!initialize) {
+        throw new Error('initializeSlicer method not found in IDL.');
+      }
+
+      await initialize(new anchor.BN(1000 * 10 ** 9), 2)
+        .accounts({
+          whale: wallet.publicKey,
+          mint: mintSol,
+          targetMint: mintUsdc,
+          parentState: parentStatePda,
+          vault: vaultPda,
+          whaleTokenAccount: whaleSolAta,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+          rent: SYSVAR_RENT_PUBKEY,
+        })
+        .rpc();
+
+      logInfo('✅ Vault Initialized! Ready for the engine.');
+    } catch (err: unknown) {
+      console.error(err);
+      const message = err instanceof Error ? err.message : String(err);
+      logInfo(`❌ Vault Error: ${message}`);
+    }
+  };
+
+  const handleTurnCrank = async () => {
+    if (!wallet) {
+      logInfo('ERROR: Connect wallet first.');
       return;
     }
 
@@ -185,42 +297,119 @@ function App() {
     }
 
     try {
-      logInfo('INFO: Initializing vault with 1000 mock SOL...');
+      logInfo('INFO: Cranking engine...');
 
       const [parentStatePda] = PublicKey.findProgramAddressSync(
         [Buffer.from('parent'), wallet.publicKey.toBuffer()],
         program.programId,
       );
 
-      const whaleSolAta = getAssociatedTokenAddressSync(mintSol, wallet.publicKey);
-      const totalDeposit = new anchor.BN(1000).mul(new anchor.BN(10).pow(new anchor.BN(9)));
-      const urgencyLevel = 2;
-
-      const methods = program.methods as unknown as ProgramMethods;
-      const initialize = methods.initializeSlicer ?? methods.initialize_slicer;
-
-      if (!initialize) {
-        throw new Error('initialize_slicer method not found in IDL.');
+      const accountApi = program.account as unknown as ProgramAccountsApi;
+      const parentClient = accountApi.slicerParent ?? accountApi.slicer_parent;
+      if (!parentClient) {
+        throw new Error('SlicerParent account client unavailable.');
       }
 
-      const tx = await initialize(totalDeposit, urgencyLevel)
-        .accounts({
-          whale: wallet.publicKey,
-          mint: mintSol,
-          targetMint: mintUsdc,
-          target_mint: mintUsdc,
-          parentState: parentStatePda,
-          parent_state: parentStatePda,
-          whaleTokenAccount: whaleSolAta,
-          whale_token_account: whaleSolAta,
-        })
-        .rpc();
+      const parentData = await parentClient.fetch(parentStatePda);
+      const balance = parentData.remainingBalance ?? parentData.remaining_balance;
+      if (!balance) {
+        throw new Error('remaining_balance not found on parent state.');
+      }
 
-      logInfo(`OK: Vault initialized. Tx: ${tx.slice(0, 15)}...`);
+      const [childSlicePda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('slice'), parentStatePda.toBuffer(), balance.toArrayLike(Buffer, 'le', 8)],
+        program.programId,
+      );
+
+      const methods = program.methods as unknown as ProgramMethods;
+      const crank = methods.engineTriggerSlice ?? methods.engine_trigger_slice;
+      if (!crank) {
+        throw new Error('engine_trigger_slice method not found in IDL.');
+      }
+
+      await runWithAccountsFallback(
+        () => crank(),
+        [
+          {
+            cranker: wallet.publicKey,
+            parentState: parentStatePda,
+            childSlice: childSlicePda,
+            systemProgram: SystemProgram.programId,
+          },
+          {
+            cranker: wallet.publicKey,
+            parent_state: parentStatePda,
+            child_slice: childSlicePda,
+            system_program: SystemProgram.programId,
+          },
+        ],
+      );
+
+      logInfo('OK: Crank turned. New slice created.');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logInfo(`ERROR: Vault init failed - ${message}`);
+      logInfo(`ERROR: Crank failed - ${message}`);
       console.error(error);
+    }
+  };
+
+  const handleBuySlice = async () => {
+    const program = getProgram();
+    if (!program || !wallet || !mintSol || !mintUsdc) return;
+
+    try {
+      logInfo("🛒 Attempting to purchase active slice...");
+      const [parentStatePda] = PublicKey.findProgramAddressSync([Buffer.from("parent"), wallet.publicKey.toBuffer()], program.programId);
+      const [vaultPda] = PublicKey.findProgramAddressSync([Buffer.from("vault"), parentStatePda.toBuffer()], program.programId);
+
+      const childSliceClient = (program.account as unknown as ProgramAccountsApi).childSlice;
+      if (!childSliceClient) {
+        throw new Error('ChildSlice account client unavailable.');
+      }
+
+      const allSlices = await childSliceClient.all();
+      const activeSlice = allSlices.find((s: ChildSliceRecord) => s.account.isFilled === false);
+
+      if (!activeSlice || !activeSlice.publicKey) {
+        logInfo("❌ No active slices found. Turn the crank first!");
+        return;
+      }
+
+      logInfo(`🎯 Found Slice: ${activeSlice.publicKey.toBase58().slice(0, 8)}...`);
+
+      const buyerSolAta = getAssociatedTokenAddressSync(mintSol, wallet.publicKey);
+      const buyerUsdcAta = getAssociatedTokenAddressSync(mintUsdc, wallet.publicKey);
+
+      // THE FIX: Generate a dummy destination account for the Whale to receive the USDC
+      const dummyWhale = Keypair.generate();
+      const dummyWhaleUsdcAta = getAssociatedTokenAddressSync(mintUsdc, dummyWhale.publicKey);
+      
+      // Instruction to actually create that dummy account on the blockchain
+      const createDummyAtaIx = createAssociatedTokenAccountInstruction(
+        wallet.publicKey, // You pay the tiny creation fee
+        dummyWhaleUsdcAta,
+        dummyWhale.publicKey,
+        mintUsdc
+      );
+
+      // Execute the swap, but prepend the creation instruction!
+      await program.methods.fillSlice().accounts({
+        buyer: wallet.publicKey,
+        childSlice: activeSlice.publicKey, 
+        parent: parentStatePda,
+        vault: vaultPda,
+        buyerTargetAccount: buyerUsdcAta,
+        whaleTargetAccount: dummyWhaleUsdcAta, // 👈 Different account now!
+        buyerSolAccount: buyerSolAta,
+        tokenProgram: TOKEN_PROGRAM_ID, 
+      })
+      .preInstructions([createDummyAtaIx]) // 👈 Creates the account right before the swap
+      .rpc();
+
+      logInfo(`🤝 SWAP COMPLETE! Mock USDC paid, SOL received.`);
+    } catch (err: any) {
+      console.error(err);
+      logInfo(`❌ Swap Error: ${err.message}`);
     }
   };
 
@@ -326,9 +515,9 @@ function App() {
               <section className="risk-card">
                 <h4>Runbook</h4>
                 <ul>
-                  <li>Step 1 creates mock SOL and USDC mints + whale token accounts</li>
-                  <li>Step 2 initializes ArcSlicer with the generated mint accounts</li>
-                  <li>Logs below show every transaction stage and errors</li>
+                  <li>Step 1 mints mock SOL + mock USDC for local execution tests</li>
+                  <li>Step 2 initializes parent state and escrow vault accounts</li>
+                  <li>Step 3 triggers a fresh child slice, Step 4 purchases it</li>
                 </ul>
               </section>
 
@@ -350,6 +539,26 @@ function App() {
                   disabled={!assetsReady}
                 >
                   Step 2: Initialize Vault
+                  <ArrowUpRight size={17} />
+                </button>
+
+                <button
+                  className="launch-btn setup-btn"
+                  type="button"
+                  onClick={handleTurnCrank}
+                  disabled={!assetsReady}
+                >
+                  Step 3: Turn Crank
+                  <ArrowUpRight size={17} />
+                </button>
+
+                <button
+                  className="launch-btn"
+                  type="button"
+                  onClick={handleBuySlice}
+                  disabled={!assetsReady}
+                >
+                  Step 4: Buy Slice
                   <ArrowUpRight size={17} />
                 </button>
               </div>
