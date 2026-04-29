@@ -1,0 +1,341 @@
+{
+  "address": "E6Q35ahMXEsREnpbMzSku4rqDNojGa6iD3XoAVcpSNAQ",
+  "metadata": {
+    "name": "arcslicer",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Created with Anchor"
+  },
+  "instructions": [
+    {
+      "name": "engine_trigger_slice",
+      "discriminator": [
+        134,
+        82,
+        114,
+        63,
+        249,
+        199,
+        10,
+        159
+      ],
+      "accounts": [
+        {
+          "name": "cranker",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "parent_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  114,
+                  101,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "parent_state.owner",
+                "account": "SlicerParent"
+              }
+            ]
+          }
+        },
+        {
+          "name": "child_slice",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  108,
+                  105,
+                  99,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "parent_state"
+              },
+              {
+                "kind": "account",
+                "path": "parent_state.remaining_balance",
+                "account": "SlicerParent"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "fill_slice",
+      "discriminator": [
+        101,
+        109,
+        153,
+        194,
+        139,
+        216,
+        162,
+        3
+      ],
+      "accounts": [
+        {
+          "name": "buyer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "child_slice",
+          "writable": true
+        },
+        {
+          "name": "parent"
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "buyer_target_account",
+          "writable": true
+        },
+        {
+          "name": "whale_target_account",
+          "writable": true
+        },
+        {
+          "name": "buyer_sol_account",
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "initialize_slicer",
+      "discriminator": [
+        138,
+        87,
+        107,
+        126,
+        41,
+        0,
+        202,
+        50
+      ],
+      "accounts": [
+        {
+          "name": "whale",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "target_mint"
+        },
+        {
+          "name": "parent_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  114,
+                  101,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "whale"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "parent_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "whale_token_account",
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "total_deposit",
+          "type": "u64"
+        },
+        {
+          "name": "urgency_level",
+          "type": "u8"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "ChildSlice",
+      "discriminator": [
+        82,
+        114,
+        7,
+        133,
+        33,
+        241,
+        179,
+        66
+      ]
+    },
+    {
+      "name": "SlicerParent",
+      "discriminator": [
+        238,
+        74,
+        215,
+        106,
+        138,
+        86,
+        21,
+        138
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "VaultEmpty",
+      "msg": "The vault is empty, cannot slice any more funds."
+    }
+  ],
+  "types": [
+    {
+      "name": "ChildSlice",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "parent",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount_available",
+            "type": "u64"
+          },
+          {
+            "name": "price_per_token",
+            "type": "u64"
+          },
+          {
+            "name": "is_filled",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SlicerParent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "target_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "vault_pda",
+            "type": "pubkey"
+          },
+          {
+            "name": "total_deposit",
+            "type": "u64"
+          },
+          {
+            "name": "remaining_balance",
+            "type": "u64"
+          },
+          {
+            "name": "urgency_level",
+            "type": "u8"
+          },
+          {
+            "name": "last_slice_time",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "vault_bump",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ]
+}
