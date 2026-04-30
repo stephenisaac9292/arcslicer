@@ -1,15 +1,18 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
+use anchor_spl::{
+    associated_token::AssociatedToken,
+    token::{self, Mint, Token, TokenAccount, Transfer},
+};
 pub mod state;
 use state::*;
 
 // Keep YOUR generated ID here.
-declare_id!("E6Q35ahMXEsREnpbMzSku4rqDNojGa6iD3XoAVcpSNAQ");
+declare_id!("75uhE7ybcaxboCBGC7j7hAX9N6oqY1PvearcyULUqxKi");
 
 #[program]
 pub mod arcslicer {
     use super::*;
-    // Instruction handlers will go here
+
     pub fn initialize_slicer(
         ctx: Context<InitializeSlicer>, 
         total_deposit: u64, 
@@ -18,10 +21,9 @@ pub mod arcslicer {
         let parent_state = &mut ctx.accounts.parent_state;
         let whale = &ctx.accounts.whale;
 
-        // 1. Initialize the Blueprints
         parent_state.owner = whale.key();
-        parent_state.mint = ctx.accounts.mint.key();
-        parent_state.target_mint = ctx.accounts.target_mint.key();
+        parent_state.mint = ctx.accounts.wsol_mint.key();
+        parent_state.target_mint = ctx.accounts.usdc_mint.key();
         parent_state.vault_pda = ctx.accounts.vault.key();
         parent_state.total_deposit = total_deposit;
         parent_state.remaining_balance = total_deposit;
@@ -30,18 +32,16 @@ pub mod arcslicer {
         let clock = Clock::get()?;
         parent_state.last_slice_time = clock.unix_timestamp;
         
+        // Removed vault_bump because ATAs do not generate a custom bump in ctx
         parent_state.bump = ctx.bumps.parent_state;
-        parent_state.vault_bump = ctx.bumps.vault;
 
-        // 2. Execute the CPI (Move the money into the Escrow Vault)
-        // FIX 1: Use 'Transfer' directly to clear the unused import warning
         let transfer_accounts = Transfer {
-            from: ctx.accounts.whale_token_account.to_account_info(),
+            from: ctx.accounts.whale_wsol_account.to_account_info(),
             to: ctx.accounts.vault.to_account_info(),
             authority: whale.to_account_info(),
         };
         
-        // FIX 2: Anchor 0.30+ expects a Pubkey here, not AccountInfo
+        // FIX: Anchor 0.30+ uses .key() for CPI program IDs
         let cpi_program = ctx.accounts.token_program.key(); 
         let cpi_ctx = CpiContext::new(cpi_program, transfer_accounts);
         
@@ -54,33 +54,24 @@ pub mod arcslicer {
         let parent_state = &mut ctx.accounts.parent_state;
         let child_slice = &mut ctx.accounts.child_slice;
         
-        // Don't run if the whale is out of money
         require!(parent_state.remaining_balance > 0, SlicerError::VaultEmpty);
 
         let clock = Clock::get()?;
 
-        // --- THE "BLACK BOX" ENGINE LOGIC ---
-        // 1. Calculate a base chunk (e.g., 5% of the total deposit)
         let base_chunk = parent_state.total_deposit / 20; 
-        
-        // 2. Add Jitter (Anti-Pattern Randomizer using the network timestamp)
-        // This makes every slice a slightly different size so bots can't track the Whale!
         let jitter = (clock.unix_timestamp as u64) % (base_chunk / 2);
         let mut slice_size = base_chunk + jitter;
 
-        // 3. Final round check: don't slice more than we have left
         if slice_size > parent_state.remaining_balance {
             slice_size = parent_state.remaining_balance;
         }
 
-        // 4. Update the Parent Vault State
         parent_state.remaining_balance = parent_state.remaining_balance.checked_sub(slice_size).unwrap();
         parent_state.last_slice_time = clock.unix_timestamp;
 
-        // 5. Build the Bait (Initialize the Child Slice)
         child_slice.parent = parent_state.key();
         child_slice.amount_available = slice_size;
-        child_slice.price_per_token = 150_000_000; // Mock price: 150 USDC per SOL (assuming 6 decimals)
+        child_slice.price_per_token = 150_000_000; 
         child_slice.is_filled = false;
 
         Ok(())
@@ -90,27 +81,23 @@ pub mod arcslicer {
         let child_slice = &mut ctx.accounts.child_slice;
         let parent = &ctx.accounts.parent;
 
-        // 1. Calculate the exact USDC cost
-        // Math: (Amount of SOL in lamports * Price per Token) / 1,000,000,000
         let cost_in_usdc = (child_slice.amount_available as u128)
             .checked_mul(child_slice.price_per_token as u128)
             .unwrap()
             .checked_div(1_000_000_000)
             .unwrap() as u64;
 
+        // FIX: Anchor 0.30+ uses .key() for CPI program IDs
         let cpi_program = ctx.accounts.token_program.key();
 
-        // 2. SWAP PART 1: Buyer pays USDC directly to the Whale
         let usdc_transfer = Transfer {
-            from: ctx.accounts.buyer_target_account.to_account_info(),
-            to: ctx.accounts.whale_target_account.to_account_info(),
-            authority: ctx.accounts.buyer.to_account_info(), // Buyer signs this personally
+            from: ctx.accounts.buyer_usdc_account.to_account_info(),
+            to: ctx.accounts.whale_usdc_account.to_account_info(),
+            authority: ctx.accounts.buyer.to_account_info(), 
         };
         let cpi_usdc_ctx = CpiContext::new(cpi_program, usdc_transfer);
         token::transfer(cpi_usdc_ctx, cost_in_usdc)?;
 
-        // 3. SWAP PART 2: PDA Vault sends SOL to the Buyer
-        // Because the vault is owned by the program, the parent_state PDA must sign for it.
         let owner_key = parent.owner;
         let parent_bump = parent.bump;
         let parent_seeds = &[
@@ -122,13 +109,12 @@ pub mod arcslicer {
 
         let sol_transfer = Transfer {
             from: ctx.accounts.vault.to_account_info(),
-            to: ctx.accounts.buyer_sol_account.to_account_info(),
-            authority: parent.to_account_info(), // The Parent PDA is the authority!
+            to: ctx.accounts.buyer_wsol_account.to_account_info(),
+            authority: parent.to_account_info(), 
         };
         let cpi_sol_ctx = CpiContext::new_with_signer(cpi_program, sol_transfer, signer);
         token::transfer(cpi_sol_ctx, child_slice.amount_available)?;
 
-        // 4. Mark the slice as filled so it cannot be double-spent
         child_slice.is_filled = true;
 
         Ok(())
@@ -140,37 +126,36 @@ pub struct InitializeSlicer<'info> {
     #[account(mut)]
     pub whale: Signer<'info>,
 
-    pub mint: Account<'info, Mint>, // Token being sold
-    pub target_mint: Account<'info, Mint>, // Token wanted
+    pub wsol_mint: Account<'info, Mint>,
+    pub usdc_mint: Account<'info, Mint>,
 
-    // 1. Create the SlicerParent state account (The Blueprints)
     #[account(
         init,
         payer = whale,
-        space = 8 + 32 + 32 + 32 + 32 + 8 + 8 + 1 + 8 + 1 + 1, // Bytes needed
-        seeds = [b"parent", whale.key().as_ref()], 
+        space = 8 + 200, 
+        seeds = [b"parent", whale.key().as_ref()],
         bump
     )]
     pub parent_state: Account<'info, SlicerParent>,
 
-    // 2. Create the PDA Token Vault (The Escrow)
     #[account(
         init,
         payer = whale,
-        token::mint = mint,
-        token::authority = parent_state, // The program controls this vault
-        seeds = [b"vault", parent_state.key().as_ref()],
-        bump
+        associated_token::mint = wsol_mint,
+        associated_token::authority = parent_state, 
     )]
     pub vault: Account<'info, TokenAccount>,
 
-    // The whale's personal token account to deposit from
-    #[account(mut)]
-    pub whale_token_account: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        associated_token::mint = wsol_mint,
+        associated_token::authority = whale,
+    )]
+    pub whale_wsol_account: Account<'info, TokenAccount>,
 
-    // Required System Programs
-    pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
     pub rent: Sysvar<'info, Rent>,
 }
 
@@ -179,7 +164,6 @@ pub struct TriggerEngine<'info> {
     #[account(mut)]
     pub cranker: Signer<'info>,
 
-    // SECURITY OVERRIDE: Enforce that this is the exact PDA we created in the Escrow step
     #[account(
         mut,
         seeds = [b"parent", parent_state.owner.as_ref()],
@@ -187,8 +171,6 @@ pub struct TriggerEngine<'info> {
     )]
     pub parent_state: Account<'info, SlicerParent>,
 
-    // ARCHITECTURE MAGIC: Use the current balance as a seed to mathematically guarantee 
-    // a brand new, unique PDA is generated for every single slice.
     #[account(
         init,
         payer = cranker,
@@ -196,7 +178,7 @@ pub struct TriggerEngine<'info> {
         seeds = [b"slice", parent_state.key().as_ref(), parent_state.remaining_balance.to_le_bytes().as_ref()],
         bump
     )]
-    pub child_slice: Account<'info, ChildSlice>,
+    pub child_slice: Account<'info, ChildSlice>, // FIX: Reverted back to ChildSlice
 
     pub system_program: Program<'info, System>,
 }
@@ -206,22 +188,42 @@ pub struct FillSlice<'info> {
     #[account(mut)]
     pub buyer: Signer<'info>,
 
-    #[account(mut)]
-    pub child_slice: Account<'info, ChildSlice>,
-
+    #[account(
+        mut,
+        seeds = [b"parent", parent.owner.as_ref()], 
+        bump = parent.bump
+    )]
     pub parent: Account<'info, SlicerParent>,
 
     #[account(mut)]
+    pub child_slice: Account<'info, ChildSlice>, // FIX: Reverted back to ChildSlice
+
+    #[account(
+        mut,
+        associated_token::mint = wsol_mint,
+        associated_token::authority = parent,
+    )]
     pub vault: Account<'info, TokenAccount>,
 
-    #[account(mut)]
-    pub buyer_target_account: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        associated_token::mint = usdc_mint,
+        associated_token::authority = buyer,
+    )]
+    pub buyer_usdc_account: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        associated_token::mint = wsol_mint,
+        associated_token::authority = buyer,
+    )]
+    pub buyer_wsol_account: Account<'info, TokenAccount>,
 
     #[account(mut)]
-    pub whale_target_account: Account<'info, TokenAccount>,
+    pub whale_usdc_account: Account<'info, TokenAccount>,
 
-    #[account(mut)]
-    pub buyer_sol_account: Account<'info, TokenAccount>,
+    pub wsol_mint: Account<'info, Mint>,
+    pub usdc_mint: Account<'info, Mint>,
 
     pub token_program: Program<'info, Token>,
 }
@@ -231,6 +233,3 @@ pub enum SlicerError {
     #[msg("The vault is empty, cannot slice any more funds.")]
     VaultEmpty,
 }
-
-
-
