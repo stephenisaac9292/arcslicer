@@ -77,6 +77,17 @@
   align-items: center;
 }
 
+.nav-links button {
+  appearance: none;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  cursor: pointer;
+}
+
 .nav-links a {
   color: var(--text-muted);
   text-decoration: none;
@@ -91,6 +102,38 @@
 }
 
 .nav-links a:hover {
+  color: var(--text-main);
+  border-color: var(--line-strong);
+  background: rgba(26, 21, 12, 0.64);
+}
+
+.active-tab {
+  color: var(--text-main);
+  text-decoration: none;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-family: var(--font-mono);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 0.36rem 0.6rem;
+  background: rgba(34, 28, 17, 0.96);
+}
+
+.nav-links .ghost-link {
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-family: var(--font-mono);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 0.36rem 0.6rem;
+  transition: color 180ms ease, border-color 180ms ease, background-color 180ms ease;
+}
+
+.nav-links .ghost-link:hover {
   color: var(--text-main);
   border-color: var(--line-strong);
   background: rgba(26, 21, 12, 0.64);
@@ -429,6 +472,11 @@
   gap: 0.44rem;
 }
 
+.wallet-map-card dl.grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.56rem;
+}
+
 .wallet-map-card dl div {
   display: flex;
   justify-content: space-between;
@@ -436,6 +484,16 @@
   gap: 0.62rem;
   border-top: 1px solid rgba(200, 169, 107, 0.16);
   padding-top: 0.45rem;
+}
+
+.wallet-map-card dl.grid div {
+  display: grid;
+  gap: 0.28rem;
+  border-top: 0;
+  padding: 0.52rem;
+  border-radius: 8px;
+  border: 1px solid var(--line-soft);
+  background: rgba(16, 16, 16, 0.9);
 }
 
 .wallet-map-card dt {
@@ -454,6 +512,11 @@
   text-align: right;
 }
 
+.wallet-map-card dl.grid dd {
+  text-align: left;
+  font-size: 0.82rem;
+}
+
 .wallet-map-card p {
   margin: 0.56rem 0 0;
   color: var(--text-muted);
@@ -464,6 +527,232 @@
 .wallet-map-card code {
   color: #efd8b4;
   font-family: var(--font-mono);
+}
+
+.faucet-container {
+  margin-top: 0.22rem;
+  border: 1px solid rgba(93, 152, 255, 0.35);
+  border-radius: 10px;
+  background: linear-gradient(160deg, rgba(11, 20, 36, 0.92), rgba(8, 8, 8, 0.94));
+  padding: 0.65rem 0.7rem;
+}
+
+.faucet-container h5 {
+  margin: 0;
+  font-size: 0.69rem;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.faucet-container p {
+  margin: 0.24rem 0 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.faucet-container button {
+  border: 1px solid rgba(93, 152, 255, 0.46);
+  border-radius: 8px;
+  background: rgba(36, 80, 166, 0.88);
+  color: #f0f7ff;
+  padding: 0.5rem 0.66rem;
+  font-family: var(--font-mono);
+  font-size: 0.63rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color 180ms ease, background-color 180ms ease;
+}
+
+.faucet-container button:hover:not(:disabled) {
+  border-color: rgba(144, 186, 255, 0.8);
+  background: rgba(48, 106, 214, 0.92);
+}
+
+.faucet-container button:disabled {
+  border-color: rgba(74, 103, 152, 0.46);
+  background: rgba(30, 48, 84, 0.86);
+  color: rgba(210, 223, 240, 0.6);
+  cursor: wait;
+}
+
+.faucet-container .font-mono {
+  font-family: var(--font-mono);
+}
+
+.border-purple-500\/50 {
+  border-color: rgba(168, 85, 247, 0.34);
+}
+
+.border-green-500\/50 {
+  border-color: rgba(74, 222, 128, 0.34);
+}
+
+.text-green-400 {
+  color: #86efac;
+}
+
+.text-purple-400 {
+  color: #c084fc;
+}
+
+.text-blue-400 {
+  color: #93c5fd;
+}
+
+.text-blue-300 {
+  color: #bfdbfe;
+}
+
+.text-red-400 {
+  color: #fca5a5;
+}
+
+.text-gray-300 {
+  color: #d1d5db;
+}
+
+.text-gray-500 {
+  color: #6b7280;
+}
+
+.text-gray-600 {
+  color: #4b5563;
+}
+
+.text-white {
+  color: #fff;
+}
+
+.font-bold {
+  font-weight: 700;
+}
+
+.text-xs {
+  font-size: 0.75rem;
+}
+
+.text-sm {
+  font-size: 0.875rem;
+}
+
+.text-lg {
+  font-size: 1.125rem;
+}
+
+.mt-2 {
+  margin-top: 0.5rem;
+}
+
+.mt-4 {
+  margin-top: 1rem;
+}
+
+.mt-6 {
+  margin-top: 1.5rem;
+}
+
+.mb-2 {
+  margin-bottom: 0.5rem;
+}
+
+.mb-4 {
+  margin-bottom: 1rem;
+}
+
+.py-12 {
+  padding-top: 3rem;
+  padding-bottom: 3rem;
+}
+
+.animate-pulse {
+  animation: pulse-soft 1500ms ease-in-out infinite;
+}
+
+.faucet-card {
+  border-radius: 10px;
+  border: 1px solid var(--line-soft);
+  background: rgba(8, 8, 8, 0.92);
+  padding: 0.76rem 0.82rem;
+  display: grid;
+  gap: 0.56rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.faucet-card::after {
+  content: "";
+  position: absolute;
+  left: 0.8rem;
+  right: 0.8rem;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(200, 169, 107, 0), rgba(200, 169, 107, 0.55), rgba(200, 169, 107, 0));
+}
+
+.faucet-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.faucet-head h4 {
+  margin: 0;
+  font-size: 0.69rem;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: #efd8b4;
+}
+
+.faucet-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.26rem 0.46rem;
+  border-radius: 8px;
+  border: 1px solid rgba(200, 169, 107, 0.34);
+  background: rgba(154, 117, 56, 0.16);
+  color: #f1dec4;
+  font-size: 0.58rem;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  font-family: var(--font-mono);
+}
+
+.faucet-copy {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.48;
+  font-size: 0.8rem;
+}
+
+.faucet-btn {
+  justify-content: center;
+}
+
+.faucet-log {
+  margin: 0;
+  border-top: 1px solid rgba(200, 169, 107, 0.16);
+  padding-top: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.67rem;
+  line-height: 1.45;
+  letter-spacing: 0.04em;
+}
+
+.faucet-log.is-pending {
+  color: #d9c6a5;
+}
+
+.faucet-log.is-success {
+  color: #d8f0c4;
+}
+
+.faucet-log.is-error {
+  color: #f0b2b2;
 }
 
 .risk-card {

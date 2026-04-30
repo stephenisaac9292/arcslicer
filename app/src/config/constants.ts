@@ -1,9 +1,9 @@
 import { PublicKey } from '@solana/web3.js';
 
-// Official Devnet USDC (Circle)
-export const USDC_MINT = new PublicKey("4zMMC9srt5Ri5X14YGWAyUcMftUZsrMF4cWeKys8nvoK");
+// Your new Custom Devnet USDC
+export const USDC_MINT = new PublicKey("Gwqyjo4kZtgmdnwmBhgU1h6skNzbGqWweMc2KGjG6NTV");
 
-// Official Devnet Wrapped SOL (wSOL) - Required because your Rust contract uses SPL Token transfers
+// Official Devnet Wrapped SOL (wSOL)
 export const WSOL_MINT = new PublicKey("So11111111111111111111111111111111111111112");
 
 export const DEFAULT_CADENCE_SECONDS = 12;
