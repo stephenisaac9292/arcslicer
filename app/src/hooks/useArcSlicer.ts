@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useConnection, useAnchorWallet } from '@solana/wallet-adapter-react';
 import * as anchor from '@coral-xyz/anchor';
-import { PublicKey, Keypair, SystemProgram, SYSVAR_RENT_PUBKEY } from '@solana/web3.js';
+import { PublicKey, Keypair, SystemProgram } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID, createAssociatedTokenAccountInstruction, getAccount, getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { Buffer } from 'buffer';
 import idl from '../idl/arcslicer.json';
@@ -108,29 +108,52 @@ export const useArcSlicer = () => {
   // --- ACTION HANDLERS ---
   const initializeVault = async () => {
     const program = getProgram();
-    const pdas = getPdas(program!);
-    if (!program || !pdas) return logInfo("ERROR: Program not ready.");
+    const publicKey = wallet?.publicKey;
+    if (!program || !publicKey) return logInfo('❌ Wallet not connected');
 
     try {
       logInfo('🔒 Locking wSOL into ArcSlicer Escrow...');
-      const whaleWsolAta = getAssociatedTokenAddressSync(WSOL_MINT, wallet!.publicKey);
-      
-      await program.methods.initializeSlicer(new anchor.BN(1000 * 1e9), 2)
+      setIsLoading(true);
+
+      const [parentStatePda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('parent'), publicKey.toBuffer()],
+        program.programId
+      );
+
+      const vaultPdaAta = getAssociatedTokenAddressSync(
+        WSOL_MINT,
+        parentStatePda,
+        true
+      );
+
+      const whaleWsolAccount = getAssociatedTokenAddressSync(
+        WSOL_MINT,
+        publicKey
+      );
+
+      const tx = await program.methods
+        .initializeSlicer(
+          new anchor.BN(100_000_000),
+          1
+        )
         .accounts({
-          whale: wallet!.publicKey,
-          mint: WSOL_MINT,
-          targetMint: USDC_MINT,
-          parentState: pdas.parentStatePda,
-          vault: pdas.vaultPda,
-          whaleTokenAccount: whaleWsolAta,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-          rent: SYSVAR_RENT_PUBKEY,
-        }).rpc();
-      
-      logInfo('✅ Vault Initialized!');
-      fetchProtocolState();
-    } catch (err: any) { logInfo(`❌ Error: ${err.message}`); }
+          whale: publicKey,
+          wsolMint: WSOL_MINT,
+          usdcMint: USDC_MINT,
+          parentState: parentStatePda,
+          vault: vaultPdaAta,
+          whaleWsolAccount: whaleWsolAccount,
+        } as any)
+        .rpc();
+
+      logInfo(`✅ Vault Initialized! TX: ${tx.slice(0, 8)}...`);
+      await fetchProtocolState();
+    } catch (err: any) {
+      console.error(err);
+      logInfo(`❌ Error: ${err.message}`);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const turnCrank = async () => {
