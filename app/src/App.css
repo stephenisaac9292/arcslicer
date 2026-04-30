@@ -407,6 +407,65 @@
   text-align: right;
 }
 
+.wallet-map-card {
+  border-radius: 10px;
+  border: 1px solid var(--line-soft);
+  background: rgba(8, 8, 8, 0.92);
+  padding: 0.76rem 0.82rem;
+}
+
+.wallet-map-card h4 {
+  margin: 0;
+  font-size: 0.69rem;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: #efd8b4;
+}
+
+.wallet-map-card dl {
+  margin: 0.56rem 0 0;
+  display: grid;
+  gap: 0.44rem;
+}
+
+.wallet-map-card dl div {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.62rem;
+  border-top: 1px solid rgba(200, 169, 107, 0.16);
+  padding-top: 0.45rem;
+}
+
+.wallet-map-card dt {
+  font-family: var(--font-mono);
+  font-size: 0.63rem;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: var(--text-muted);
+}
+
+.wallet-map-card dd {
+  margin: 0;
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  color: var(--text-main);
+  text-align: right;
+}
+
+.wallet-map-card p {
+  margin: 0.56rem 0 0;
+  color: var(--text-muted);
+  line-height: 1.46;
+  font-size: 0.8rem;
+}
+
+.wallet-map-card code {
+  color: #efd8b4;
+  font-family: var(--font-mono);
+}
+
 .risk-card {
   padding: 0.76rem 0.82rem;
 }
@@ -630,6 +689,22 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.56rem;
+}
+
+.action-hint {
+  margin: 0.2rem 0 0;
+  border: 1px solid rgba(200, 169, 107, 0.28);
+  border-radius: 10px;
+  background: rgba(18, 14, 8, 0.74);
+  color: #d9c6a5;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  padding: 0.56rem 0.64rem;
+  font-family: var(--font-mono);
+}
+
+.action-hint code {
+  color: #efd8b4;
 }
 
 .setup-btn {
