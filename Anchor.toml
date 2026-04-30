@@ -5,11 +5,13 @@ package_manager = "npm"
 resolution = true
 skip-lint = false
 
-[programs.localnet]
+# Change 1: Tell Anchor this Program ID belongs on Devnet now
+[programs.devnet]
 arcslicer = "E6Q35ahMXEsREnpbMzSku4rqDNojGa6iD3XoAVcpSNAQ"
 
+# Change 2: Point your wallet and connection to Devnet
 [provider]
-cluster = "localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
