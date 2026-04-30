@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { useAnchorWallet, useConnection } from '@solana/wallet-adapter-react';
 import {
@@ -34,18 +34,13 @@ if (typeof window !== 'undefined') {
   window.Buffer = Buffer;
 }
 
-const tapeItems = [
-  'Spread Integrity: 99.4%',
-  'Slice Cadence: 12s',
-  'Quote Drift: 0.03%',
-  'Pending Slices: 12',
-];
-
 const telemetry = [
   { label: 'Route Confidence', value: '98.7%', meter: '98%' },
   { label: 'Liquidity Match', value: '94.2%', meter: '94%' },
   { label: 'Cadence Stability', value: '99.1%', meter: '99%' },
 ];
+
+const DEFAULT_CADENCE_SECONDS = 12;
 
 type MethodCallBuilder = {
   accounts: (accounts: Record<string, PublicKey>) => {
@@ -68,9 +63,18 @@ type ProgramMethods = {
 type ParentStateData = {
   remainingBalance?: anchor.BN;
   remaining_balance?: anchor.BN;
+  urgencyLevel?: number;
+  urgency_level?: number;
+  lastSliceTime?: anchor.BN | number;
+  last_slice_time?: anchor.BN | number;
 };
 
 type ChildSliceData = {
+  parent?: PublicKey;
+  amountAvailable?: anchor.BN;
+  amount_available?: anchor.BN;
+  pricePerToken?: anchor.BN;
+  price_per_token?: anchor.BN;
   isFilled?: boolean;
   is_filled?: boolean;
 };
@@ -78,6 +82,19 @@ type ChildSliceData = {
 type ChildSliceRecord = {
   publicKey: PublicKey;
   account: ChildSliceData;
+};
+
+type ShadowSlice = {
+  id: string;
+  amount: number;
+  price: number;
+};
+
+type SliceFilter = {
+  memcmp: {
+    offset: number;
+    bytes: string;
+  };
 };
 
 type ProgramAccountsApi = {
@@ -88,11 +105,49 @@ type ProgramAccountsApi = {
     fetch: (address: PublicKey) => Promise<ParentStateData>;
   };
   childSlice?: {
-    all: () => Promise<ChildSliceRecord[]>;
+    all: (filters?: SliceFilter[]) => Promise<ChildSliceRecord[]>;
   };
   child_slice?: {
-    all: () => Promise<ChildSliceRecord[]>;
+    all: (filters?: SliceFilter[]) => Promise<ChildSliceRecord[]>;
   };
+};
+
+const bnToNumber = (value: anchor.BN | number | undefined): number => {
+  if (value === undefined) {
+    return 0;
+  }
+
+  if (typeof value === 'number') {
+    return value;
+  }
+
+  return value.toNumber();
+};
+
+const urgencyToCadenceSeconds = (urgencyLevel: number): number => {
+  if (urgencyLevel === 1) {
+    return 24;
+  }
+
+  if (urgencyLevel === 3) {
+    return 6;
+  }
+
+  return DEFAULT_CADENCE_SECONDS;
+};
+
+const formatCountdown = (seconds: number | null): string => {
+  if (seconds === null) {
+    return '--:--';
+  }
+
+  if (seconds <= 0) {
+    return '00:00';
+  }
+
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 };
 
 function App() {
@@ -102,12 +157,32 @@ function App() {
   const [logs, setLogs] = useState<string[]>([]);
   const [mintSol, setMintSol] = useState<PublicKey | null>(null);
   const [mintUsdc, setMintUsdc] = useState<PublicKey | null>(null);
+  const [vaultData, setVaultData] = useState({
+    lockedSol: 0,
+    slicesRemaining: 0,
+    cadenceSeconds: DEFAULT_CADENCE_SECONDS,
+    lastSliceTime: 0,
+  });
+  const [slices, setSlices] = useState<ShadowSlice[]>([]);
+  const [isProtocolLoading, setIsProtocolLoading] = useState(false);
+  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
 
   const assetsReady = mintSol !== null && mintUsdc !== null;
 
   const shortAddress = wallet
     ? `${wallet.publicKey.toBase58().slice(0, 4)}...${wallet.publicKey.toBase58().slice(-4)}`
     : null;
+  const nextTradeCountdown = formatCountdown(
+    vaultData.lastSliceTime > 0
+      ? vaultData.lastSliceTime + vaultData.cadenceSeconds - nowSec
+      : null,
+  );
+  const liveTapeItems = [
+    'Spread Integrity: 99.4%',
+    `Slice Cadence: ${vaultData.cadenceSeconds}s`,
+    'Quote Drift: 0.03%',
+    `Pending Slices: ${vaultData.slicesRemaining}`,
+  ];
 
   const shortKey = (key: PublicKey | null) => {
     if (!key) {
@@ -154,6 +229,163 @@ function App() {
 
     throw new Error('All account variants failed.');
   };
+
+  const getParentAndVaultPdas = (program: anchor.Program<anchor.Idl>) => {
+    if (!wallet) {
+      return null;
+    }
+
+    const [parentStatePda] = PublicKey.findProgramAddressSync(
+      [Buffer.from('parent'), wallet.publicKey.toBuffer()],
+      program.programId,
+    );
+    const [vaultPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from('vault'), parentStatePda.toBuffer()],
+      program.programId,
+    );
+
+    return {
+      parentStatePda,
+      vaultPda,
+    };
+  };
+
+  const fetchActiveSlices = async (
+    program: anchor.Program<anchor.Idl>,
+    parentStatePda: PublicKey,
+  ): Promise<ShadowSlice[]> => {
+    const accountApi = program.account as unknown as ProgramAccountsApi;
+    const childSliceClient = accountApi.childSlice ?? accountApi.child_slice;
+    if (!childSliceClient) {
+      return [];
+    }
+
+    const allSlices = await childSliceClient.all([
+      {
+        memcmp: {
+          offset: 8,
+          bytes: parentStatePda.toBase58(),
+        },
+      },
+    ]);
+
+    return allSlices
+      .filter((slice) => !(slice.account.isFilled ?? slice.account.is_filled ?? false))
+      .map((slice) => {
+        const amount = slice.account.amountAvailable ?? slice.account.amount_available;
+        const price = slice.account.pricePerToken ?? slice.account.price_per_token;
+
+        return {
+          id: slice.publicKey.toBase58(),
+          amount: bnToNumber(amount) / 1e9,
+          price: bnToNumber(price) / 1e6,
+        };
+      });
+  };
+
+  const fetchProtocolState = async (
+    program: anchor.Program<anchor.Idl>,
+    parentStatePda: PublicKey,
+    vaultPda: PublicKey,
+    slicesRemaining: number,
+  ) => {
+    let lockedSol = 0;
+    try {
+      const vaultBalance = await connection.getTokenAccountBalance(vaultPda);
+      lockedSol = vaultBalance.value.uiAmount ?? Number(vaultBalance.value.uiAmountString ?? '0');
+    } catch {
+      lockedSol = 0;
+    }
+
+    const accountApi = program.account as unknown as ProgramAccountsApi;
+    const parentClient = accountApi.slicerParent ?? accountApi.slicer_parent;
+
+    if (!parentClient) {
+      setVaultData({
+        lockedSol,
+        slicesRemaining,
+        cadenceSeconds: DEFAULT_CADENCE_SECONDS,
+        lastSliceTime: 0,
+      });
+      return;
+    }
+
+    try {
+      const state = await parentClient.fetch(parentStatePda);
+      const urgencyLevel = state.urgencyLevel ?? state.urgency_level ?? 2;
+      const lastSliceTime = bnToNumber(state.lastSliceTime ?? state.last_slice_time);
+
+      setVaultData({
+        lockedSol,
+        slicesRemaining,
+        cadenceSeconds: urgencyToCadenceSeconds(urgencyLevel),
+        lastSliceTime,
+      });
+    } catch {
+      setVaultData({
+        lockedSol,
+        slicesRemaining,
+        cadenceSeconds: DEFAULT_CADENCE_SECONDS,
+        lastSliceTime: 0,
+      });
+    }
+  };
+
+  const refreshShadowEconomy = async () => {
+    if (!wallet) {
+      return;
+    }
+
+    const program = getProgram();
+    if (!program) {
+      return;
+    }
+
+    const pdas = getParentAndVaultPdas(program);
+    if (!pdas) {
+      return;
+    }
+
+    try {
+      setIsProtocolLoading(true);
+      const activeSlices = await fetchActiveSlices(program, pdas.parentStatePda);
+      setSlices(activeSlices);
+      await fetchProtocolState(program, pdas.parentStatePda, pdas.vaultPda, activeSlices.length);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setIsProtocolLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNowSec(Math.floor(Date.now() / 1000));
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!wallet) {
+      setVaultData({
+        lockedSol: 0,
+        slicesRemaining: 0,
+        cadenceSeconds: DEFAULT_CADENCE_SECONDS,
+        lastSliceTime: 0,
+      });
+      setSlices([]);
+      return;
+    }
+
+    void refreshShadowEconomy();
+    const refresh = window.setInterval(() => {
+      void refreshShadowEconomy();
+    }, 12000);
+
+    return () => window.clearInterval(refresh);
+    // Depends on wallet session + minted assets lifecycle.
+  }, [wallet, mintSol, mintUsdc]);
 
   const handleSetupTokens = async () => {
     if (!wallet) {
@@ -230,6 +462,7 @@ function App() {
       setMintSol(newMintSol.publicKey);
       setMintUsdc(newMintUsdc.publicKey);
       logInfo('OK: Assets created. You have 1000 mock SOL and 10000 mock USDC.');
+      void refreshShadowEconomy();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logInfo(`ERROR: Setup failed - ${message}`);
@@ -246,14 +479,11 @@ function App() {
     try {
       logInfo('🔒 Locking 1,000 SOL into ArcSlicer Escrow...');
 
-      const [parentStatePda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('parent'), wallet.publicKey.toBuffer()],
-        program.programId,
-      );
-      const [vaultPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('vault'), parentStatePda.toBuffer()],
-        program.programId,
-      );
+      const pdas = getParentAndVaultPdas(program);
+      if (!pdas) {
+        throw new Error('Unable to derive protocol PDAs.');
+      }
+      const { parentStatePda, vaultPda } = pdas;
       const whaleSolAta = getAssociatedTokenAddressSync(mintSol, wallet.publicKey);
 
       const methods = program.methods as unknown as ProgramMethods;
@@ -277,6 +507,7 @@ function App() {
         .rpc();
 
       logInfo('✅ Vault Initialized! Ready for the engine.');
+      void refreshShadowEconomy();
     } catch (err: unknown) {
       console.error(err);
       const message = err instanceof Error ? err.message : String(err);
@@ -299,10 +530,11 @@ function App() {
     try {
       logInfo('INFO: Cranking engine...');
 
-      const [parentStatePda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('parent'), wallet.publicKey.toBuffer()],
-        program.programId,
-      );
+      const pdas = getParentAndVaultPdas(program);
+      if (!pdas) {
+        throw new Error('Unable to derive protocol PDAs.');
+      }
+      const { parentStatePda } = pdas;
 
       const accountApi = program.account as unknown as ProgramAccountsApi;
       const parentClient = accountApi.slicerParent ?? accountApi.slicer_parent;
@@ -346,6 +578,7 @@ function App() {
       );
 
       logInfo('OK: Crank turned. New slice created.');
+      void refreshShadowEconomy();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logInfo(`ERROR: Crank failed - ${message}`);
@@ -358,20 +591,33 @@ function App() {
     if (!program || !wallet || !mintSol || !mintUsdc) return;
 
     try {
-      logInfo("🛒 Attempting to purchase active slice...");
-      const [parentStatePda] = PublicKey.findProgramAddressSync([Buffer.from("parent"), wallet.publicKey.toBuffer()], program.programId);
-      const [vaultPda] = PublicKey.findProgramAddressSync([Buffer.from("vault"), parentStatePda.toBuffer()], program.programId);
+      logInfo('🛒 Attempting to purchase active slice...');
+      const pdas = getParentAndVaultPdas(program);
+      if (!pdas) {
+        throw new Error('Unable to derive protocol PDAs.');
+      }
+      const { parentStatePda, vaultPda } = pdas;
 
-      const childSliceClient = (program.account as unknown as ProgramAccountsApi).childSlice;
+      const accountApi = program.account as unknown as ProgramAccountsApi;
+      const childSliceClient = accountApi.childSlice ?? accountApi.child_slice;
       if (!childSliceClient) {
         throw new Error('ChildSlice account client unavailable.');
       }
 
-      const allSlices = await childSliceClient.all();
-      const activeSlice = allSlices.find((s: ChildSliceRecord) => s.account.isFilled === false);
+      const allSlices = await childSliceClient.all([
+        {
+          memcmp: {
+            offset: 8,
+            bytes: parentStatePda.toBase58(),
+          },
+        },
+      ]);
+      const activeSlice = allSlices.find(
+        (slice: ChildSliceRecord) => !(slice.account.isFilled ?? slice.account.is_filled ?? false),
+      );
 
       if (!activeSlice || !activeSlice.publicKey) {
-        logInfo("❌ No active slices found. Turn the crank first!");
+        logInfo('❌ No active slices found. Turn the crank first!');
         return;
       }
 
@@ -383,33 +629,37 @@ function App() {
       // THE FIX: Generate a dummy destination account for the Whale to receive the USDC
       const dummyWhale = Keypair.generate();
       const dummyWhaleUsdcAta = getAssociatedTokenAddressSync(mintUsdc, dummyWhale.publicKey);
-      
+
       // Instruction to actually create that dummy account on the blockchain
       const createDummyAtaIx = createAssociatedTokenAccountInstruction(
         wallet.publicKey, // You pay the tiny creation fee
         dummyWhaleUsdcAta,
         dummyWhale.publicKey,
-        mintUsdc
+        mintUsdc,
       );
 
       // Execute the swap, but prepend the creation instruction!
-      await program.methods.fillSlice().accounts({
-        buyer: wallet.publicKey,
-        childSlice: activeSlice.publicKey, 
-        parent: parentStatePda,
-        vault: vaultPda,
-        buyerTargetAccount: buyerUsdcAta,
-        whaleTargetAccount: dummyWhaleUsdcAta, // 👈 Different account now!
-        buyerSolAccount: buyerSolAta,
-        tokenProgram: TOKEN_PROGRAM_ID, 
-      })
-      .preInstructions([createDummyAtaIx]) // 👈 Creates the account right before the swap
-      .rpc();
+      await program.methods
+        .fillSlice()
+        .accounts({
+          buyer: wallet.publicKey,
+          childSlice: activeSlice.publicKey,
+          parent: parentStatePda,
+          vault: vaultPda,
+          buyerTargetAccount: buyerUsdcAta,
+          whaleTargetAccount: dummyWhaleUsdcAta, // 👈 Different account now!
+          buyerSolAccount: buyerSolAta,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .preInstructions([createDummyAtaIx]) // 👈 Creates the account right before the swap
+        .rpc();
 
-      logInfo(`🤝 SWAP COMPLETE! Mock USDC paid, SOL received.`);
-    } catch (err: any) {
+      logInfo('🤝 SWAP COMPLETE! Mock USDC paid, SOL received.');
+      void refreshShadowEconomy();
+    } catch (err: unknown) {
       console.error(err);
-      logInfo(`❌ Swap Error: ${err.message}`);
+      const message = err instanceof Error ? err.message : String(err);
+      logInfo(`❌ Swap Error: ${message}`);
     }
   };
 
@@ -460,7 +710,7 @@ function App() {
           </div>
 
           <div className="tape-rail" aria-label="Execution tape">
-            {tapeItems.map((item) => (
+            {liveTapeItems.map((item) => (
               <span key={item} className="tape-item">
                 {item}
               </span>
@@ -519,6 +769,47 @@ function App() {
                   <li>Step 2 initializes parent state and escrow vault accounts</li>
                   <li>Step 3 triggers a fresh child slice, Step 4 purchases it</li>
                 </ul>
+              </section>
+
+              <section className="shadow-monitor">
+                <div className="shadow-monitor-head">
+                  <h4>Shadow Economy</h4>
+                  <button
+                    className="refresh-btn"
+                    type="button"
+                    onClick={() => void refreshShadowEconomy()}
+                    disabled={isProtocolLoading}
+                  >
+                    {isProtocolLoading ? 'Syncing...' : 'Sync'}
+                  </button>
+                </div>
+
+                <div className="shadow-grid">
+                  <article className="shadow-block">
+                    <p className="shadow-label">ArcSlicer Escrow</p>
+                    <p className="shadow-value">{vaultData.lockedSol.toFixed(4)} SOL</p>
+                    <p className="shadow-meta">Total Slices Pending: {vaultData.slicesRemaining}</p>
+                    <p className="shadow-meta">Next Trade In: {nextTradeCountdown}</p>
+                  </article>
+
+                  <article className="shadow-block">
+                    <p className="shadow-label">Active Slices</p>
+                    {slices.length === 0 ? (
+                      <p className="shadow-wait">
+                        {isProtocolLoading ? 'Reading chain state...' : 'Waiting for crank...'}
+                      </p>
+                    ) : (
+                      <div className="slice-list">
+                        {slices.map((slice) => (
+                          <div key={slice.id} className="slice-row">
+                            <span>{slice.amount.toFixed(4)} SOL</span>
+                            <span>{slice.price.toFixed(2)} USDC</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </article>
+                </div>
               </section>
 
               <div className="action-grid">
