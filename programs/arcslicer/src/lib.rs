@@ -87,33 +87,38 @@ pub mod arcslicer {
             .checked_div(1_000_000_000)
             .unwrap() as u64;
 
-        // FIX: Anchor 0.30+ uses .key() for CPI program IDs
         let cpi_program = ctx.accounts.token_program.key();
 
-        let usdc_transfer = Transfer {
-            from: ctx.accounts.buyer_usdc_account.to_account_info(),
-            to: ctx.accounts.whale_usdc_account.to_account_info(),
-            authority: ctx.accounts.buyer.to_account_info(), 
-        };
-        let cpi_usdc_ctx = CpiContext::new(cpi_program, usdc_transfer);
-        token::transfer(cpi_usdc_ctx, cost_in_usdc)?;
+        // MEMORY SCOPE 1: Execute USDC Transfer and immediately clear stack
+        {
+            let usdc_transfer = Transfer {
+                from: ctx.accounts.buyer_usdc_account.to_account_info(),
+                to: ctx.accounts.whale_usdc_account.to_account_info(),
+                authority: ctx.accounts.buyer.to_account_info(),
+            };
+            let cpi_usdc_ctx = CpiContext::new(cpi_program, usdc_transfer);
+            token::transfer(cpi_usdc_ctx, cost_in_usdc)?;
+        }
 
-        let owner_key = parent.owner;
-        let parent_bump = parent.bump;
-        let parent_seeds = &[
-            b"parent",
-            owner_key.as_ref(),
-            &[parent_bump],
-        ];
-        let signer = &[&parent_seeds[..]];
+        // MEMORY SCOPE 2: Execute wSOL Transfer and immediately clear stack
+        {
+            let owner_key = parent.owner;
+            let parent_bump = parent.bump;
+            let parent_seeds = &[
+                b"parent",
+                owner_key.as_ref(),
+                &[parent_bump],
+            ];
+            let signer = &[&parent_seeds[..]];
 
-        let sol_transfer = Transfer {
-            from: ctx.accounts.vault.to_account_info(),
-            to: ctx.accounts.buyer_wsol_account.to_account_info(),
-            authority: parent.to_account_info(), 
-        };
-        let cpi_sol_ctx = CpiContext::new_with_signer(cpi_program, sol_transfer, signer);
-        token::transfer(cpi_sol_ctx, child_slice.amount_available)?;
+            let sol_transfer = Transfer {
+                from: ctx.accounts.vault.to_account_info(),
+                to: ctx.accounts.buyer_wsol_account.to_account_info(),
+                authority: parent.to_account_info(),
+            };
+            let cpi_sol_ctx = CpiContext::new_with_signer(cpi_program, sol_transfer, signer);
+            token::transfer(cpi_sol_ctx, child_slice.amount_available)?;
+        }
 
         child_slice.is_filled = true;
 
@@ -193,37 +198,37 @@ pub struct FillSlice<'info> {
         seeds = [b"parent", parent.owner.as_ref()], 
         bump = parent.bump
     )]
-    pub parent: Account<'info, SlicerParent>,
+    pub parent: Box<Account<'info, SlicerParent>>,
 
     #[account(mut)]
-    pub child_slice: Account<'info, ChildSlice>, // FIX: Reverted back to ChildSlice
+    pub child_slice: Box<Account<'info, ChildSlice>>,
 
     #[account(
         mut,
         associated_token::mint = wsol_mint,
         associated_token::authority = parent,
     )]
-    pub vault: Account<'info, TokenAccount>,
+    pub vault: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
         associated_token::mint = usdc_mint,
         associated_token::authority = buyer,
     )]
-    pub buyer_usdc_account: Account<'info, TokenAccount>,
+    pub buyer_usdc_account: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
         associated_token::mint = wsol_mint,
         associated_token::authority = buyer,
     )]
-    pub buyer_wsol_account: Account<'info, TokenAccount>,
+    pub buyer_wsol_account: Box<Account<'info, TokenAccount>>,
 
     #[account(mut)]
-    pub whale_usdc_account: Account<'info, TokenAccount>,
+    pub whale_usdc_account: Box<Account<'info, TokenAccount>>,
 
-    pub wsol_mint: Account<'info, Mint>,
-    pub usdc_mint: Account<'info, Mint>,
+    pub wsol_mint: Box<Account<'info, Mint>>,
+    pub usdc_mint: Box<Account<'info, Mint>>,
 
     pub token_program: Program<'info, Token>,
 }
