@@ -1,11 +1,19 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useConnection, useAnchorWallet } from '@solana/wallet-adapter-react';
 import * as anchor from '@coral-xyz/anchor';
-import { PublicKey, Keypair, SystemProgram } from '@solana/web3.js';
-import { TOKEN_PROGRAM_ID, createAssociatedTokenAccountInstruction, getAccount, getAssociatedTokenAddressSync } from '@solana/spl-token';
+import { PublicKey, SystemProgram } from '@solana/web3.js';
+import { TOKEN_PROGRAM_ID, getAccount, getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { Buffer } from 'buffer';
 import idl from '../idl/arcslicer.json';
 import { USDC_MINT, WSOL_MINT, DEFAULT_CADENCE_SECONDS } from '../config/constants';
+
+type MarketSlice = {
+  id: PublicKey;
+  parentId: PublicKey;
+  whaleOwnerPubkey: PublicKey;
+  amount: number;
+  price: number;
+};
 
 export const useArcSlicer = () => {
   const { connection } = useConnection();
@@ -16,7 +24,7 @@ export const useArcSlicer = () => {
   const [balances, setBalances] = useState({ nativeSol: 0, usdc: 0 });
   const [vaultData, setVaultData] = useState({ lockedSol: 0, slicesRemaining: 0, lastSliceTime: 0, cadenceSeconds: DEFAULT_CADENCE_SECONDS });
   const [isParentInitialized, setIsParentInitialized] = useState(false);
-  const [slices, setSlices] = useState<any[]>([]);
+  const [slices, setSlices] = useState<MarketSlice[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
   const logInfo = (msg: string) => setLogs(prev => [...prev, msg]);
@@ -55,33 +63,36 @@ export const useArcSlicer = () => {
 
   const fetchProtocolState = useCallback(async () => {
     const program = getProgram();
-    const pdas = getPdas(program!);
+    if (!program) return;
+
+    const pdas = getPdas(program);
     if (!program || !pdas) return;
 
     setIsLoading(true);
     try {
-      // 1. Fetch Slices (Cast program.account to any to bypass strict IDL TS checks)
       const accountApi = program.account as any;
-      
-      // Handle both camelCase and snake_case just in case your IDL didn't update perfectly
-      const sliceClient = accountApi.childSlice || accountApi.child_slice;
       const parentClient = accountApi.slicerParent || accountApi.slicer_parent;
+      const sliceClient = accountApi.childSlice || accountApi.child_slice;
 
-      const allSlices = await sliceClient.all([
-        { memcmp: { offset: 8, bytes: pdas.parentStatePda.toBase58() } }
-      ]);
-      
-      // Explicitly type (s: any) to fix the implicit any error
-      const activeSlices = allSlices
-        .filter((s: any) => !(s.account.isFilled ?? s.account.is_filled))
-        .map((s: any) => ({
-          id: s.publicKey.toBase58(),
-          amount: (s.account.amountAvailable ?? s.account.amount_available).toNumber() / 1e9,
-          price: (s.account.pricePerToken ?? s.account.price_per_token).toNumber() / 1e6
-        }));
-      setSlices(activeSlices);
+      // Global marketplace scrape: fetch every slice account, then enrich with parent owner.
+      const allSlices = await sliceClient.all();
+      const activeSlicesRaw = allSlices.filter((slice: any) => !(slice.account.isFilled ?? slice.account.is_filled));
 
-      // 2. Fetch Vault & Parent
+      const enrichedSlices = await Promise.all(
+        activeSlicesRaw.map(async (slice: any) => {
+          const parentId = slice.account.parent;
+          const parentState = await parentClient.fetch(parentId);
+          return {
+            id: slice.publicKey,
+            parentId,
+            whaleOwnerPubkey: parentState.owner,
+            amount: (slice.account.amountAvailable ?? slice.account.amount_available).toNumber() / 1e9,
+            price: (slice.account.pricePerToken ?? slice.account.price_per_token).toNumber() / 1e6,
+          } satisfies MarketSlice;
+        }),
+      );
+      setSlices(enrichedSlices);
+
       const vaultBalance = await connection.getTokenAccountBalance(pdas.vaultPda).catch(() => ({ value: { uiAmount: 0 } }));
       try {
         const state = await parentClient.fetch(pdas.parentStatePda);
@@ -91,7 +102,7 @@ export const useArcSlicer = () => {
         
         setVaultData({
           lockedSol: vaultBalance.value.uiAmount || 0,
-          slicesRemaining: activeSlices.length,
+          slicesRemaining: enrichedSlices.filter((slice) => slice.parentId.equals(pdas.parentStatePda)).length,
           lastSliceTime: lastSlice.toNumber(),
           cadenceSeconds: urgency === 1 ? 24 : urgency === 3 ? 6 : DEFAULT_CADENCE_SECONDS
         });
@@ -143,6 +154,9 @@ export const useArcSlicer = () => {
           parentState: parentStatePda,
           vault: vaultPdaAta,
           whaleWsolAccount: whaleWsolAccount,
+          associatedTokenProgram: anchor.utils.token.ASSOCIATED_PROGRAM_ID,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
         } as any)
         .rpc();
 
@@ -190,44 +204,57 @@ export const useArcSlicer = () => {
         }).rpc();
 
       logInfo('OK: Crank turned. New slice created.');
-      fetchProtocolState();
+      void fetchProtocolState();
     } catch (err: any) { logInfo(`❌ Crank Error: ${err.message}`); }
   };
 
-  const buySlice = async () => {
+  const buySlice = async (slice?: MarketSlice) => {
     const program = getProgram();
-    const pdas = getPdas(program!);
-    if (!program || !pdas || slices.length === 0) return logInfo("❌ No active slices.");
+    if (!program || !wallet?.publicKey) return logInfo('❌ Wallet not connected');
+
+    const targetSlice = slice ?? slices[0];
+    if (!targetSlice) return logInfo('❌ No active slices.');
 
     try {
       logInfo('🛒 Executing Swap...');
-      const activeSliceId = slices[0].id;
-      const buyerWsolAta = getAssociatedTokenAddressSync(WSOL_MINT, wallet!.publicKey);
-      const buyerUsdcAta = getAssociatedTokenAddressSync(USDC_MINT, wallet!.publicKey);
-      
-      // Dummy Whale Recipient for testing
-      const dummyWhale = Keypair.generate();
-      const dummyWhaleUsdcAta = getAssociatedTokenAddressSync(USDC_MINT, dummyWhale.publicKey);
-      const createDummyIx = createAssociatedTokenAccountInstruction(wallet!.publicKey, dummyWhaleUsdcAta, dummyWhale.publicKey, USDC_MINT);
+      setIsLoading(true);
+
+      const buyerPublicKey = wallet.publicKey;
+      const buyerWsolAta = getAssociatedTokenAddressSync(WSOL_MINT, buyerPublicKey);
+      const buyerUsdcAta = getAssociatedTokenAddressSync(USDC_MINT, buyerPublicKey);
+      const whaleUsdcAta = getAssociatedTokenAddressSync(USDC_MINT, targetSlice.whaleOwnerPubkey);
+      const vaultPdaAta = getAssociatedTokenAddressSync(WSOL_MINT, targetSlice.parentId, true);
 
       await program.methods.fillSlice()
         .accounts({
-          buyer: wallet!.publicKey,
-          childSlice: new PublicKey(activeSliceId),
-          parent: pdas.parentStatePda,
-          vault: pdas.vaultPda,
-          buyerTargetAccount: buyerUsdcAta,
-          whaleTargetAccount: dummyWhaleUsdcAta,
-          buyerSolAccount: buyerWsolAta,
+          buyer: buyerPublicKey,
+          parent: targetSlice.parentId,
+          childSlice: targetSlice.id,
+          child_slice: targetSlice.id,
+          vault: vaultPdaAta,
+          buyerUsdcAccount: buyerUsdcAta,
+          buyer_usdc_account: buyerUsdcAta,
+          buyerWsolAccount: buyerWsolAta,
+          buyer_wsol_account: buyerWsolAta,
+          whaleUsdcAccount: whaleUsdcAta,
+          whale_usdc_account: whaleUsdcAta,
+          wsolMint: WSOL_MINT,
+          wsol_mint: WSOL_MINT,
+          usdcMint: USDC_MINT,
+          usdc_mint: USDC_MINT,
           tokenProgram: TOKEN_PROGRAM_ID,
+          token_program: TOKEN_PROGRAM_ID,
         })
-        .preInstructions([createDummyIx])
         .rpc();
 
       logInfo('🤝 SWAP COMPLETE!');
-      fetchProtocolState();
-      fetchBalances();
-    } catch (err: any) { logInfo(`❌ Swap Error: ${err.message}`); }
+      await fetchProtocolState();
+      await fetchBalances();
+    } catch (err: any) {
+      logInfo(`❌ Swap Error: ${err.message}`);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // Poll intervals

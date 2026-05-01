@@ -133,7 +133,7 @@ function App() {
                         {slices.length === 0 ? <p className="shadow-wait animate-pulse text-gray-500">Scanning pool for active slices...</p> : (
                           <div className="slice-list">
                             {slices.map((slice) => (
-                              <div key={slice.id} className="slice-row flex justify-between items-center border-b border-gray-700/50 py-3">
+                              <div key={slice.id.toBase58()} className="slice-row flex justify-between items-center border-b border-gray-700/50 py-3">
                                 <div className="flex flex-col">
                                   <span className="font-bold text-white text-lg">{slice.amount.toFixed(4)} wSOL</span>
                                   <span className="text-xs text-gray-500">Encrypted Dark Pool Route</span>
@@ -150,7 +150,11 @@ function App() {
                   </section>
 
                   <div className="action-grid mt-4">
-                    <button className="launch-btn bg-green-600 hover:bg-green-500 text-white disabled:opacity-50 w-full" onClick={buySlice} disabled={slices.length === 0}>
+                    <button
+                      className="launch-btn bg-green-600 hover:bg-green-500 text-white disabled:opacity-50 w-full"
+                      onClick={() => void buySlice(slices[0])}
+                      disabled={slices.length === 0}
+                    >
                       Buy Best Available Slice <ArrowUpRight size={17} />
                     </button>
                   </div>
