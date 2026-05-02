@@ -9,7 +9,7 @@ import './App.css';
 function App() {
   const { publicKey } = useWallet();
   const {
-    balances, vaultData, slices, isParentInitialized, isLoading, logs,
+    balances, vaultData, slices, isParentInitialized, isLoading, liveSolPrice, logs,
     initializeVault, turnCrank, depositFunds, buySlice, refreshState
   } = useArcSlicer();
 
@@ -125,37 +125,50 @@ function App() {
                 <>
                   <section className="shadow-monitor border-green-500/50">
                     <div className="shadow-monitor-head">
-                      <h4 className="text-green-400">Available Slices</h4>
+                      <div>
+                        <h4 className="text-green-400">Available Slices</h4>
+                        <p className="text-xs text-gray-500">
+                          Pyth oracle: {liveSolPrice ? `$${liveSolPrice.toFixed(4)} / SOL` : 'syncing...'} - 6s poll
+                        </p>
+                      </div>
                       <button className="refresh-btn" onClick={refreshState} disabled={isLoading}>
                         {isLoading ? 'Syncing...' : 'Sync'}
                       </button>
                     </div>
 
                     <div className="shadow-grid">
-                    <article className="shadow-block">
-                      {slices.length === 0 ? <p className="shadow-wait animate-pulse text-gray-500">Scanning pool for active slices...</p> : (
-                        <div className="slice-list">
-                          {slices.map((slice) => (
-                            <div key={slice.id.toBase58()} className="slice-row flex justify-between items-center border-b border-gray-700/50 py-3">
-                              <div className="flex flex-col">
-                                <span className="font-bold text-white text-lg">{slice.amount.toFixed(4)} wSOL</span>
-                                <span className="text-xs text-gray-400">Price: {slice.price.toFixed(2)} USDC</span>
-                              </div>
-                              <button 
-                                onClick={() => void buySlice(slice)}
-                                className="bg-green-600 hover:bg-green-500 px-4 py-2 rounded text-white text-sm font-bold transition-colors"
-                                disabled={isLoading}
-                              >
-                                Buy This Slice
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </article>
+                      <article className="shadow-block">
+                        {slices.length === 0 ? <p className="shadow-wait animate-pulse text-gray-500">Scanning pool for active slices...</p> : (
+                          <div className="slice-list">
+                            {slices.map((slice) => {
+                              const executionPrice = liveSolPrice ?? slice.price;
+                              const estimatedCost = slice.amount * executionPrice;
+
+                              return (
+                                <div key={slice.id.toBase58()} className="slice-row flex justify-between items-center border-b border-gray-700/50 py-3">
+                                  <div className="flex flex-col">
+                                    <span className="font-bold text-white text-lg">{slice.amount.toFixed(4)} wSOL</span>
+                                    <span className="text-xs text-gray-400">Live price: {executionPrice.toFixed(4)} USDC / SOL</span>
+                                    <span className="text-xs text-green-300 font-mono">Est. debit: {estimatedCost.toFixed(2)} USDC</span>
+                                    <span className="text-[10px] text-gray-600">Final amount is rechecked by Pyth on-chain.</span>
+                                  </div>
+                                  <button 
+                                    onClick={() => void buySlice(slice)}
+                                    className="bg-green-600 hover:bg-green-500 px-4 py-2 rounded text-white text-sm font-bold transition-colors"
+                                    disabled={isLoading}
+                                  >
+                                    Buy This Slice
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </article>
                     </div>
-                    </section>
-                    </>              )}
+                  </section>
+                </>
+              )}
 
               <div className="terminal-log mt-6 bg-black/50 p-3 rounded font-mono text-xs border border-gray-800">
                 <div className="text-gray-500 mb-2 border-b border-gray-800 pb-1">System Logs</div>

@@ -13,9 +13,27 @@ type MarketSlice = {
   whaleOwnerPubkey: PublicKey;
   amount: number;
   price: number;
+  totalCost: number;
 };
 
 const PYTH_DEVNET_SOL_USD = new PublicKey('7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE');
+const PYTH_SOL_USD_FEED_ID = 'ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d';
+const PYTH_PUSH_FEED_ID_OFFSET = 41;
+const PYTH_PUSH_PRICE_OFFSET = 73;
+const PYTH_PUSH_EXPO_OFFSET = 89;
+
+const parsePythSolPrice = (data: Buffer) => {
+  if (
+    data.length < 133 ||
+    data.subarray(PYTH_PUSH_FEED_ID_OFFSET, PYTH_PUSH_FEED_ID_OFFSET + 32).toString('hex') !== PYTH_SOL_USD_FEED_ID
+  ) {
+    return null;
+  }
+
+  const price = Number(data.readBigInt64LE(PYTH_PUSH_PRICE_OFFSET));
+  const expo = data.readInt32LE(PYTH_PUSH_EXPO_OFFSET);
+  return price > 0 ? price * 10 ** expo : null;
+};
 
 export const useArcSlicer = () => {
   const { connection } = useConnection();
@@ -28,6 +46,7 @@ export const useArcSlicer = () => {
   const [isParentInitialized, setIsParentInitialized] = useState(false);
   const [slices, setSlices] = useState<MarketSlice[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [liveSolPrice, setLiveSolPrice] = useState<number | null>(null);
   const isProcessingRef = useRef(false);
 
   const logInfo = (msg: string) => setLogs(prev => [...prev, msg]);
@@ -64,6 +83,22 @@ export const useArcSlicer = () => {
     }
   }, [connection, wallet]);
 
+  const fetchLiveSolPrice = useCallback(async () => {
+    const accountInfo = await connection.getAccountInfo(PYTH_DEVNET_SOL_USD);
+    if (!accountInfo) return null;
+
+    const price = parsePythSolPrice(Buffer.from(accountInfo.data));
+    if (price) {
+      setLiveSolPrice(price);
+      setSlices(prev => prev.map(slice => ({
+        ...slice,
+        price,
+        totalCost: slice.amount * price,
+      })));
+    }
+    return price;
+  }, [connection]);
+
   const fetchProtocolState = useCallback(async () => {
     const program = getProgram();
     if (!program) return;
@@ -73,6 +108,7 @@ export const useArcSlicer = () => {
 
     setIsLoading(true);
     try {
+      const oraclePrice = await fetchLiveSolPrice();
       const accountApi = program.account as any;
       const parentClient = accountApi.slicerParent || accountApi.slicer_parent;
       const sliceClient = accountApi.childSlice || accountApi.child_slice;
@@ -85,12 +121,16 @@ export const useArcSlicer = () => {
         activeSlicesRaw.map(async (slice: any) => {
           const parentId = slice.account.parent;
           const parentState = await parentClient.fetch(parentId);
+          const amount = (slice.account.amountAvailable ?? slice.account.amount_available).toNumber() / 1e9;
+          const storedPrice = (slice.account.pricePerToken ?? slice.account.price_per_token).toNumber() / 1e6;
+          const displayPrice = oraclePrice ?? storedPrice;
           return {
             id: slice.publicKey,
             parentId,
             whaleOwnerPubkey: parentState.owner,
-            amount: (slice.account.amountAvailable ?? slice.account.amount_available).toNumber() / 1e9,
-            price: (slice.account.pricePerToken ?? slice.account.price_per_token).toNumber() / 1e6,
+            amount,
+            price: displayPrice,
+            totalCost: amount * displayPrice,
           } satisfies MarketSlice;
         }),
       );
@@ -120,7 +160,7 @@ export const useArcSlicer = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [getProgram, getPdas, connection]);
+  }, [getProgram, getPdas, connection, fetchLiveSolPrice]);
 
   // --- ACTION HANDLERS ---
   const initializeVault = async () => {
@@ -301,7 +341,7 @@ export const useArcSlicer = () => {
     if (!targetSlice) return logInfo('❌ No active slices.');
 
     try {
-      logInfo('🛒 Executing Swap...');
+      logInfo('🛒 Executing swap... Pyth will re-price this slice on-chain.');
       setIsLoading(true);
 
       const buyerPublicKey = wallet.publicKey;
@@ -329,6 +369,8 @@ export const useArcSlicer = () => {
           usdc_mint: USDC_MINT,
           tokenProgram: TOKEN_PROGRAM_ID,
           token_program: TOKEN_PROGRAM_ID,
+          pythSolUsdAccount: PYTH_DEVNET_SOL_USD,
+          pyth_sol_usd_account: PYTH_DEVNET_SOL_USD,
         })
         .rpc();
 
@@ -350,13 +392,19 @@ export const useArcSlicer = () => {
   }, [fetchBalances]);
 
   useEffect(() => {
+    void fetchLiveSolPrice();
+    const id = setInterval(fetchLiveSolPrice, 6000);
+    return () => clearInterval(id);
+  }, [fetchLiveSolPrice]);
+
+  useEffect(() => {
     fetchProtocolState();
     const id = setInterval(fetchProtocolState, 12000);
     return () => clearInterval(id);
   }, [fetchProtocolState]);
 
   return {
-    balances, vaultData, slices, isParentInitialized, isLoading, logs,
+    balances, vaultData, slices, isParentInitialized, isLoading, liveSolPrice, logs,
     initializeVault, turnCrank, depositFunds, buySlice, refreshState: fetchProtocolState
   };
 };

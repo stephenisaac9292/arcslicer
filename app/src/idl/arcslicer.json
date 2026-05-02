@@ -650,6 +650,9 @@
         {
           "name": "token_program",
           "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "pyth_sol_usd_account"
         }
       ],
       "args": []
