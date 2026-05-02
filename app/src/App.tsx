@@ -10,7 +10,7 @@ function App() {
   const { publicKey } = useWallet();
   const {
     balances, vaultData, slices, isParentInitialized, isLoading, logs,
-    initializeVault, turnCrank, buySlice, refreshState
+    initializeVault, turnCrank, depositFunds, buySlice, refreshState
   } = useArcSlicer();
 
   const { requestAirdrop, isDropping, faucetLog } = useFaucet();
@@ -113,6 +113,9 @@ function App() {
                     </button>
                     <button className="launch-btn setup-btn bg-purple-600 hover:bg-purple-500 text-white disabled:opacity-50" onClick={turnCrank} disabled={!isParentInitialized}>
                       2: Turn Crank (Jitter) <ArrowUpRight size={17} />
+                    </button>
+                    <button className="launch-btn" onClick={() => void depositFunds(0.1)} disabled={!isParentInitialized}>
+                      3: Deposit 0.1 wSOL <ArrowUpRight size={17} />
                     </button>
                   </div>
                 </>

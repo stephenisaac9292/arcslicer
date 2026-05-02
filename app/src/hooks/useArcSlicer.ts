@@ -234,6 +234,62 @@ export const useArcSlicer = () => {
     }
   };
 
+  const depositFunds = async (amountSol = 0.1) => {
+    const program = getProgram();
+    const publicKey = wallet?.publicKey;
+    if (!program || !publicKey) return logInfo('❌ Wallet not connected');
+
+    try {
+      setIsLoading(true);
+
+      const amountLamports = Math.floor(amountSol * 1_000_000_000);
+      if (amountLamports <= 0) return logInfo('❌ Invalid deposit amount');
+
+      logInfo(`💧 Depositing ${amountSol.toFixed(3)} wSOL into vault...`);
+
+      const [parentStatePda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('parent'), publicKey.toBuffer()],
+        program.programId
+      );
+
+      const vaultPdaAta = getAssociatedTokenAddressSync(
+        WSOL_MINT,
+        parentStatePda,
+        true
+      );
+
+      const whaleWsolAccount = getAssociatedTokenAddressSync(
+        WSOL_MINT,
+        publicKey
+      );
+
+      const methodsApi = program.methods as any;
+      const depositMethod = methodsApi.depositFunds || methodsApi.deposit_funds;
+
+      const tx = await depositMethod(new anchor.BN(amountLamports))
+        .accounts({
+          whale: publicKey,
+          parentState: parentStatePda,
+          parent_state: parentStatePda,
+          vault: vaultPdaAta,
+          whaleWsolAccount: whaleWsolAccount,
+          whale_wsol_account: whaleWsolAccount,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          token_program: TOKEN_PROGRAM_ID,
+        } as any)
+        .rpc();
+
+      logInfo(`✅ Deposit complete. TX: ${tx.slice(0, 8)}...`);
+      await fetchProtocolState();
+      await fetchBalances();
+    } catch (err: any) {
+      console.error(err);
+      logInfo(`❌ Deposit Error: ${err.message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const buySlice = async (slice?: MarketSlice) => {
     const program = getProgram();
     if (!program || !wallet?.publicKey) return logInfo('❌ Wallet not connected');
@@ -298,6 +354,6 @@ export const useArcSlicer = () => {
 
   return {
     balances, vaultData, slices, isParentInitialized, isLoading, logs,
-    initializeVault, turnCrank, buySlice, refreshState: fetchProtocolState
+    initializeVault, turnCrank, depositFunds, buySlice, refreshState: fetchProtocolState
   };
 };

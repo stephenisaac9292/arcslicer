@@ -50,6 +50,26 @@ pub mod arcslicer {
         Ok(())
     }
 
+    pub fn deposit_funds(ctx: Context<DepositFunds>, amount: u64) -> Result<()> {
+        let parent_state = &mut ctx.accounts.parent_state;
+
+        parent_state.total_deposit = parent_state.total_deposit.checked_add(amount).unwrap();
+        parent_state.remaining_balance = parent_state.remaining_balance.checked_add(amount).unwrap();
+
+        let transfer_accounts = Transfer {
+            from: ctx.accounts.whale_wsol_account.to_account_info(),
+            to: ctx.accounts.vault.to_account_info(),
+            authority: ctx.accounts.whale.to_account_info(),
+        };
+
+        let cpi_program = ctx.accounts.token_program.key();
+        let cpi_ctx = CpiContext::new(cpi_program, transfer_accounts);
+
+        token::transfer(cpi_ctx, amount)?;
+
+        Ok(())
+    }
+
     pub fn engine_trigger_slice(ctx: Context<TriggerEngine>, current_price: u64) -> Result<()> {
         let parent_state = &mut ctx.accounts.parent_state;
         let child_slice = &mut ctx.accounts.child_slice;
@@ -80,6 +100,8 @@ pub mod arcslicer {
     pub fn fill_slice(ctx: Context<FillSlice>) -> Result<()> {
         let child_slice = &mut ctx.accounts.child_slice;
         let parent = &ctx.accounts.parent;
+
+        require!(!child_slice.is_filled, SlicerError::SliceAlreadyFilled);
 
         let cost_in_usdc = (child_slice.amount_available as u128)
             .checked_mul(child_slice.price_per_token as u128)
@@ -165,6 +187,35 @@ pub struct InitializeSlicer<'info> {
 }
 
 #[derive(Accounts)]
+pub struct DepositFunds<'info> {
+    #[account(mut)]
+    pub whale: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"parent", whale.key().as_ref()],
+        bump = parent_state.bump
+    )]
+    pub parent_state: Account<'info, SlicerParent>,
+
+    #[account(
+        mut,
+        associated_token::mint = parent_state.mint,
+        associated_token::authority = parent_state,
+    )]
+    pub vault: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        associated_token::mint = parent_state.mint,
+        associated_token::authority = whale,
+    )]
+    pub whale_wsol_account: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
 pub struct TriggerEngine<'info> {
     #[account(mut)]
     pub cranker: Signer<'info>,
@@ -237,4 +288,7 @@ pub struct FillSlice<'info> {
 pub enum SlicerError {
     #[msg("The vault is empty, cannot slice any more funds.")]
     VaultEmpty,
+
+    #[msg("This slice has already been purchased.")]
+    SliceAlreadyFilled,
 }
