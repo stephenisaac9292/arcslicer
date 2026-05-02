@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useConnection, useAnchorWallet } from '@solana/wallet-adapter-react';
 import * as anchor from '@coral-xyz/anchor';
 import { PublicKey, SystemProgram } from '@solana/web3.js';
@@ -26,6 +26,7 @@ export const useArcSlicer = () => {
   const [isParentInitialized, setIsParentInitialized] = useState(false);
   const [slices, setSlices] = useState<MarketSlice[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const isProcessingRef = useRef(false);
 
   const logInfo = (msg: string) => setLogs(prev => [...prev, msg]);
 
@@ -100,8 +101,11 @@ export const useArcSlicer = () => {
         const urgency = state.urgencyLevel ?? state.urgency_level;
         const lastSlice = state.lastSliceTime ?? state.last_slice_time;
         
+        const rawBalance = (state.remainingBalance ?? state.remaining_balance)?.toNumber() || 0;
+        const formattedBalance = rawBalance / 1_000_000_000;
+        
         setVaultData({
-          lockedSol: vaultBalance.value.uiAmount || 0,
+          lockedSol: formattedBalance,
           slicesRemaining: enrichedSlices.filter((slice) => slice.parentId.equals(pdas.parentStatePda)).length,
           lastSliceTime: lastSlice.toNumber(),
           cadenceSeconds: urgency === 1 ? 24 : urgency === 3 ? 6 : DEFAULT_CADENCE_SECONDS
@@ -235,11 +239,13 @@ export const useArcSlicer = () => {
   };
 
   const depositFunds = async (amountSol = 0.1) => {
+    if (isProcessingRef.current) return;
     const program = getProgram();
     const publicKey = wallet?.publicKey;
     if (!program || !publicKey) return logInfo('❌ Wallet not connected');
 
     try {
+      isProcessingRef.current = true;
       setIsLoading(true);
 
       const amountLamports = Math.floor(amountSol * 1_000_000_000);
@@ -283,9 +289,14 @@ export const useArcSlicer = () => {
       await fetchProtocolState();
       await fetchBalances();
     } catch (err: any) {
+      if (err.message && err.message.includes("already been processed")) {
+        console.log("Caught a ghost double-fire. Transaction actually succeeded.");
+        return;
+      }
       console.error(err);
       logInfo(`❌ Deposit Error: ${err.message}`);
     } finally {
+      isProcessingRef.current = false;
       setIsLoading(false);
     }
   };

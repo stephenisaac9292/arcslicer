@@ -43,16 +43,16 @@ export const useFaucet = () => {
       );
 
       // ==========================================
-      // PART 2: PRINT THE USDC (10,000)
+      // PART 2: PRINT THE USDC (2,000)
       // ==========================================
       const userUsdcAta = getAssociatedTokenAddressSync(USDC_MINT, publicKey);
       const usdcAtaInfo = await connection.getAccountInfo(userUsdcAta);
-      
+
       if (!usdcAtaInfo) {
         tx.add(
           createAssociatedTokenAccountInstruction(
             funderKeypair.publicKey, // God Key pays the rent to create the bucket
-            userUsdcAta, 
+            userUsdcAta,
             publicKey, // User owns the bucket
             USDC_MINT
           )
@@ -61,10 +61,9 @@ export const useFaucet = () => {
 
       tx.add(
         createMintToInstruction(
-          USDC_MINT, userUsdcAta, funderKeypair.publicKey, 10000 * 1_000_000
+          USDC_MINT, userUsdcAta, funderKeypair.publicKey, 2000 * 1_000_000
         )
       );
-
       // ==========================================
       // PART 3: WRAP THE SOL (0.5 wSOL)
       // ==========================================
