@@ -15,6 +15,8 @@ type MarketSlice = {
   price: number;
 };
 
+const PYTH_DEVNET_SOL_USD = new PublicKey('7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE');
+
 export const useArcSlicer = () => {
   const { connection } = useConnection();
   const wallet = useAnchorWallet();
@@ -180,20 +182,8 @@ export const useArcSlicer = () => {
     if (!program || !publicKey) return logInfo('❌ Wallet not connected');
 
     try {
-      logInfo('📡 Fetching live SOL price from Jupiter...');
+      logInfo('⚙️ Cranking engine... Blockchain is fetching live Pyth price...');
       setIsLoading(true);
-
-      const response = await fetch('https://price.jup.ag/v6/price?ids=SOL');
-      const data = await response.json();
-      const liveSolPrice = data?.data?.SOL?.price;
-      if (typeof liveSolPrice !== 'number' || !Number.isFinite(liveSolPrice)) {
-        throw new Error('Invalid Jupiter price response');
-      }
-
-      logInfo(`📈 Live Price: $${liveSolPrice.toFixed(2)}`);
-      const pricePerToken = new anchor.BN(Math.floor(liveSolPrice * 1_000_000));
-
-      logInfo('⚙️ Cranking engine with live pricing...');
 
       const [parentStatePda] = PublicKey.findProgramAddressSync(
         [Buffer.from('parent'), publicKey.toBuffer()],
@@ -216,7 +206,7 @@ export const useArcSlicer = () => {
       const methodsApi = program.methods as any;
       const crankMethod = methodsApi.engineTriggerSlice || methodsApi.engine_trigger_slice;
 
-      const tx = await crankMethod(pricePerToken)
+      const tx = await crankMethod()
         .accounts({
           cranker: publicKey,
           parentState: parentStatePda,
@@ -225,10 +215,12 @@ export const useArcSlicer = () => {
           child_slice: childSlicePda,
           systemProgram: SystemProgram.programId,
           system_program: SystemProgram.programId,
+          pythSolUsdAccount: PYTH_DEVNET_SOL_USD,
+          pyth_sol_usd_account: PYTH_DEVNET_SOL_USD,
         } as any)
         .rpc();
 
-      logInfo(`✅ Crank turned! Slice listed at live market price. TX: ${tx.slice(0, 8)}...`);
+      logInfo(`✅ Crank turned! Slice listed via Oracle. TX: ${tx.slice(0, 8)}...`);
       await fetchProtocolState();
     } catch (err: any) {
       console.error(err);

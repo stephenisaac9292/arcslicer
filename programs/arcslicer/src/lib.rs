@@ -70,11 +70,31 @@ pub mod arcslicer {
         Ok(())
     }
 
-    pub fn engine_trigger_slice(ctx: Context<TriggerEngine>, current_price: u64) -> Result<()> {
+    pub fn engine_trigger_slice(ctx: Context<TriggerEngine>) -> Result<()> {
         let parent_state = &mut ctx.accounts.parent_state;
         let child_slice = &mut ctx.accounts.child_slice;
         
         require!(parent_state.remaining_balance > 0, SlicerError::VaultEmpty);
+
+        let (oracle_price, oracle_expo) = read_pyth_price(&ctx.accounts.pyth_sol_usd_account)?;
+        require!(oracle_price > 0, SlicerError::InvalidOraclePrice);
+
+        let mut price_per_token = oracle_price as u128;
+        if oracle_expo < 0 {
+            let divisor = 10u128.pow(oracle_expo.unsigned_abs());
+            price_per_token = price_per_token
+                .checked_mul(1_000_000)
+                .unwrap()
+                .checked_div(divisor)
+                .unwrap();
+        } else {
+            let multiplier = 10u128.pow(oracle_expo as u32);
+            price_per_token = price_per_token
+                .checked_mul(multiplier)
+                .unwrap()
+                .checked_mul(1_000_000)
+                .unwrap();
+        }
 
         let clock = Clock::get()?;
 
@@ -91,7 +111,7 @@ pub mod arcslicer {
 
         child_slice.parent = parent_state.key();
         child_slice.amount_available = slice_size;
-        child_slice.price_per_token = current_price; 
+        child_slice.price_per_token = price_per_token as u64; 
         child_slice.is_filled = false;
 
         Ok(())
@@ -146,6 +166,79 @@ pub mod arcslicer {
 
         Ok(())
     }
+}
+
+const PYTH_MAGIC: u32 = 0xa1b2c3d4;
+const PYTH_PRICE_ACCOUNT_TYPE: u32 = 3;
+const PYTH_STATUS_TRADING: u8 = 1;
+const PYTH_EXPO_OFFSET: usize = 20;
+const PYTH_PREV_PRICE_OFFSET: usize = 184;
+const PYTH_AGG_PRICE_OFFSET: usize = 208;
+const PYTH_AGG_STATUS_OFFSET: usize = 224;
+const PYTH_PUSH_FEED_ID_OFFSET: usize = 41;
+const PYTH_PUSH_PRICE_OFFSET: usize = 73;
+const PYTH_PUSH_EXPO_OFFSET: usize = 89;
+const PYTH_PUSH_MIN_SIZE: usize = 133;
+const PYTH_SOL_USD_FEED_ID: [u8; 32] = [
+    0xef, 0x0d, 0x8b, 0x6f, 0xda, 0x2c, 0xeb, 0xa4,
+    0x1d, 0xa1, 0x5d, 0x40, 0x95, 0xd1, 0xda, 0x39,
+    0x2a, 0x0d, 0x2f, 0x8e, 0xd0, 0xc6, 0xc7, 0xbc,
+    0x0f, 0x4c, 0xfa, 0xc8, 0xc2, 0x80, 0xb5, 0x6d,
+];
+
+fn read_pyth_price(price_account: &AccountInfo) -> Result<(i64, i32)> {
+    let data = price_account.try_borrow_data()?;
+
+    if data.len() >= 232 && read_u32_le(&data, 0) == PYTH_MAGIC {
+        return read_legacy_pyth_price(&data);
+    }
+
+    read_push_pyth_price(&data)
+}
+
+fn read_legacy_pyth_price(data: &[u8]) -> Result<(i64, i32)> {
+    require!(data.len() >= 232, SlicerError::InvalidOracleAccount);
+
+    let magic = read_u32_le(&data, 0);
+    let account_type = read_u32_le(&data, 8);
+    require!(
+        magic == PYTH_MAGIC && account_type == PYTH_PRICE_ACCOUNT_TYPE,
+        SlicerError::InvalidOracleAccount
+    );
+
+    let expo = read_i32_le(&data, PYTH_EXPO_OFFSET);
+    let price = if data[PYTH_AGG_STATUS_OFFSET] == PYTH_STATUS_TRADING {
+        read_i64_le(&data, PYTH_AGG_PRICE_OFFSET)
+    } else {
+        read_i64_le(&data, PYTH_PREV_PRICE_OFFSET)
+    };
+
+    Ok((price, expo))
+}
+
+fn read_push_pyth_price(data: &[u8]) -> Result<(i64, i32)> {
+    require!(data.len() >= PYTH_PUSH_MIN_SIZE, SlicerError::InvalidOracleAccount);
+    require!(
+        data[PYTH_PUSH_FEED_ID_OFFSET..PYTH_PUSH_FEED_ID_OFFSET + 32] == PYTH_SOL_USD_FEED_ID,
+        SlicerError::InvalidOracleAccount
+    );
+
+    Ok((
+        read_i64_le(data, PYTH_PUSH_PRICE_OFFSET),
+        read_i32_le(data, PYTH_PUSH_EXPO_OFFSET),
+    ))
+}
+
+fn read_u32_le(data: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
+}
+
+fn read_i32_le(data: &[u8], offset: usize) -> i32 {
+    i32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
+}
+
+fn read_i64_le(data: &[u8], offset: usize) -> i64 {
+    i64::from_le_bytes(data[offset..offset + 8].try_into().unwrap())
 }
 
 #[derive(Accounts)]
@@ -237,6 +330,9 @@ pub struct TriggerEngine<'info> {
     pub child_slice: Account<'info, ChildSlice>, // FIX: Reverted back to ChildSlice
 
     pub system_program: Program<'info, System>,
+
+    /// CHECK: We are reading the live Pyth price feed.
+    pub pyth_sol_usd_account: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
@@ -291,4 +387,10 @@ pub enum SlicerError {
 
     #[msg("This slice has already been purchased.")]
     SliceAlreadyFilled,
+
+    #[msg("The Pyth price feed returned an invalid SOL/USD price.")]
+    InvalidOraclePrice,
+
+    #[msg("The provided Pyth account is not a valid price feed.")]
+    InvalidOracleAccount,
 }

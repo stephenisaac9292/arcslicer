@@ -314,14 +314,12 @@
         {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "pyth_sol_usd_account"
         }
       ],
-      "args": [
-        {
-          "name": "current_price",
-          "type": "u64"
-        }
-      ]
+      "args": []
     },
     {
       "name": "fill_slice",
@@ -950,6 +948,16 @@
       "code": 6001,
       "name": "SliceAlreadyFilled",
       "msg": "This slice has already been purchased."
+    },
+    {
+      "code": 6002,
+      "name": "InvalidOraclePrice",
+      "msg": "The Pyth price feed returned an invalid SOL/USD price."
+    },
+    {
+      "code": 6003,
+      "name": "InvalidOracleAccount",
+      "msg": "The provided Pyth account is not a valid price feed."
     }
   ],
   "types": [
