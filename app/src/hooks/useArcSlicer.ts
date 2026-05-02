@@ -172,40 +172,66 @@ export const useArcSlicer = () => {
 
   const turnCrank = async () => {
     const program = getProgram();
-    const pdas = getPdas(program!);
-    if (!program || !pdas) return;
+    const publicKey = wallet?.publicKey;
+    if (!program || !publicKey) return logInfo('❌ Wallet not connected');
 
     try {
-      logInfo('INFO: Cranking engine...');
-      const accountApi = program.account as any;
-      const parentClient = accountApi.slicerParent || accountApi.slicer_parent;
-      
-      const parentData = await parentClient.fetch(pdas.parentStatePda);
-      const remainingBalance = parentData.remainingBalance ?? parentData.remaining_balance;
-      
-      const [childSlicePda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('slice'), pdas.parentStatePda.toBuffer(), remainingBalance.toArrayLike(Buffer, 'le', 8)],
+      logInfo('📡 Fetching live SOL price from Jupiter...');
+      setIsLoading(true);
+
+      const response = await fetch('https://price.jup.ag/v6/price?ids=SOL');
+      const data = await response.json();
+      const liveSolPrice = data?.data?.SOL?.price;
+      if (typeof liveSolPrice !== 'number' || !Number.isFinite(liveSolPrice)) {
+        throw new Error('Invalid Jupiter price response');
+      }
+
+      logInfo(`📈 Live Price: $${liveSolPrice.toFixed(2)}`);
+      const pricePerToken = new anchor.BN(Math.floor(liveSolPrice * 1_000_000));
+
+      logInfo('⚙️ Cranking engine with live pricing...');
+
+      const [parentStatePda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('parent'), publicKey.toBuffer()],
         program.programId
       );
 
-      // Handle IDL method naming variations
+      const accountApi = program.account as any;
+      const parentClient = accountApi.slicerParent || accountApi.slicer_parent;
+      const parentStateData = await parentClient.fetch(parentStatePda);
+      const remainingBalance = parentStateData.remainingBalance ?? parentStateData.remaining_balance;
+
+      const remainingBalanceBuffer = Buffer.alloc(8);
+      remainingBalanceBuffer.writeBigUInt64LE(BigInt(remainingBalance.toString()));
+
+      const [childSlicePda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('slice'), parentStatePda.toBuffer(), remainingBalanceBuffer],
+        program.programId
+      );
+
       const methodsApi = program.methods as any;
       const crankMethod = methodsApi.engineTriggerSlice || methodsApi.engine_trigger_slice;
 
-      await crankMethod()
+      const tx = await crankMethod(pricePerToken)
         .accounts({
-          cranker: wallet!.publicKey,
-          parentState: pdas.parentStatePda,
-          parent_state: pdas.parentStatePda, // Fallback for snake_case
+          cranker: publicKey,
+          parentState: parentStatePda,
+          parent_state: parentStatePda,
           childSlice: childSlicePda,
-          child_slice: childSlicePda, // Fallback for snake_case
+          child_slice: childSlicePda,
           systemProgram: SystemProgram.programId,
-          system_program: SystemProgram.programId, // Fallback
-        }).rpc();
+          system_program: SystemProgram.programId,
+        } as any)
+        .rpc();
 
-      logInfo('OK: Crank turned. New slice created.');
-      void fetchProtocolState();
-    } catch (err: any) { logInfo(`❌ Crank Error: ${err.message}`); }
+      logInfo(`✅ Crank turned! Slice listed at live market price. TX: ${tx.slice(0, 8)}...`);
+      await fetchProtocolState();
+    } catch (err: any) {
+      console.error(err);
+      logInfo(`❌ Crank Error: ${err.message}`);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const buySlice = async (slice?: MarketSlice) => {

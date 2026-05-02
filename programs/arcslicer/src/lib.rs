@@ -50,7 +50,7 @@ pub mod arcslicer {
         Ok(())
     }
 
-    pub fn engine_trigger_slice(ctx: Context<TriggerEngine>) -> Result<()> {
+    pub fn engine_trigger_slice(ctx: Context<TriggerEngine>, current_price: u64) -> Result<()> {
         let parent_state = &mut ctx.accounts.parent_state;
         let child_slice = &mut ctx.accounts.child_slice;
         
@@ -71,7 +71,7 @@ pub mod arcslicer {
 
         child_slice.parent = parent_state.key();
         child_slice.amount_available = slice_size;
-        child_slice.price_per_token = 150_000_000; 
+        child_slice.price_per_token = current_price; 
         child_slice.is_filled = false;
 
         Ok(())
