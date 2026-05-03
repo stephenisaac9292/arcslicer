@@ -35,23 +35,18 @@ const parsePythSolPrice = (data: Buffer) => {
   return price > 0 ? price * 10 ** expo : null;
 };
 
-// Add this outside/above your useArcSlicer hook
 const translateError = (err: any, defaultMsg: string): string => {
   const msg = err?.message || String(err);
   
-  // 1. The Ghost Catch
   if (msg.includes("already been processed") || msg.includes("blockhash not found")) return "ghost";
   
-  // 2. Custom Anchor Errors (Matches your SlicerError enum in Rust)
   if (msg.includes("VaultEmpty") || msg.includes("0x1770")) return "The Vault is empty. Wait for the Whale to deposit.";
   if (msg.includes("SliceAlreadyFilled") || msg.includes("0x1771")) return "Too slow! Someone else just bought this slice.";
   if (msg.includes("InvalidOraclePrice") || msg.includes("0x1772")) return "Oracle offline. Please try again in a moment.";
   
-  // 3. Standard Solana Errors
   if (msg.includes("insufficient funds") || msg.includes("0x1")) return "Insufficient funds for this transaction.";
   if (msg.includes("User rejected")) return "Transaction cancelled by user.";
   
-  // Fallback
   return defaultMsg;
 };
 
@@ -59,7 +54,6 @@ export const useArcSlicer = () => {
   const { connection } = useConnection();
   const wallet = useAnchorWallet();
 
-  // State Management
   const [logs, setLogs] = useState<string[]>([]);
   const [balances, setBalances] = useState({ nativeSol: 0, usdc: 0 });
   const [vaultData, setVaultData] = useState({ lockedSol: 0, slicesRemaining: 0, lastSliceTime: 0, cadenceSeconds: DEFAULT_CADENCE_SECONDS });
@@ -71,7 +65,6 @@ export const useArcSlicer = () => {
 
   const logInfo = (msg: string) => setLogs(prev => [...prev, msg]);
 
-  // --- PROGRAM SETUP ---
   const getProgram = useCallback(() => {
     if (!wallet) return null;
     const provider = new anchor.AnchorProvider(connection, wallet, { preflightCommitment: 'processed' });
@@ -85,7 +78,6 @@ export const useArcSlicer = () => {
     return { parentStatePda, vaultPda };
   }, [wallet]);
 
-  // --- DATA FETCHING ---
   const fetchBalances = useCallback(async () => {
     if (!wallet) return;
     try {
@@ -119,21 +111,23 @@ export const useArcSlicer = () => {
     return price;
   }, [connection]);
 
-  const fetchProtocolState = useCallback(async () => {
+  // THE isBackground FLAG ADDED HERE
+  const fetchProtocolState = useCallback(async (isBackground = false) => {
     const program = getProgram();
     if (!program) return;
 
     const pdas = getPdas(program);
     if (!program || !pdas) return;
 
-    setIsLoading(true);
+    // ONLY SHOW SPINNER IF IT'S A MANUAL CLICK
+    if (!isBackground) setIsLoading(true);
+    
     try {
       const oraclePrice = await fetchLiveSolPrice();
       const accountApi = program.account as any;
       const parentClient = accountApi.slicerParent || accountApi.slicer_parent;
       const sliceClient = accountApi.childSlice || accountApi.child_slice;
 
-      // Global marketplace scrape: fetch every slice account, then enrich with parent owner.
       const allSlices = await sliceClient.all();
       const activeSlicesRaw = allSlices.filter((slice: any) => !(slice.account.isFilled ?? slice.account.is_filled));
 
@@ -154,14 +148,15 @@ export const useArcSlicer = () => {
           } satisfies MarketSlice;
         }),
       );
-      // Filter out slices owned by the currently connected wallet
+      
       const marketSlices = enrichedSlices.filter(
         (slice) => slice.whaleOwnerPubkey.toBase58() !== wallet?.publicKey?.toBase58()
       );
       
       setSlices(marketSlices);
 
-      const vaultBalance = await connection.getTokenAccountBalance(pdas.vaultPda).catch(() => ({ value: { uiAmount: 0 } }));
+      // (vaultBalance line removed to fix Error 3)
+
       try {
         const state = await parentClient.fetch(pdas.parentStatePda);
         setIsParentInitialized(true);
@@ -183,11 +178,11 @@ export const useArcSlicer = () => {
     } catch (e) {
       console.error(e);
     } finally {
-      setIsLoading(false);
+      // ONLY HIDE SPINNER IF IT'S A MANUAL CLICK
+      if (!isBackground) setIsLoading(false);
     }
-  }, [getProgram, getPdas, connection, fetchLiveSolPrice]);
+  }, [getProgram, getPdas, connection, fetchLiveSolPrice, wallet?.publicKey]);
 
-  // --- ACTION HANDLERS ---
   const initializeVault = async () => {
     const program = getProgram();
     const publicKey = wallet?.publicKey;
@@ -232,7 +227,7 @@ export const useArcSlicer = () => {
         .rpc();
 
       logInfo(`✅ Vault Initialized! TX: ${tx.slice(0, 8)}...`);
-      await fetchProtocolState();
+      await fetchProtocolState(false);
     } catch (err: any) {
       console.error(err);
       logInfo(`❌ Error: ${err.message}`);
@@ -242,7 +237,6 @@ export const useArcSlicer = () => {
   };
 
   const turnCrank = async () => {
-    // 1. THE LOCK
     if (isProcessingRef.current) return;
     
     const program = getProgram();
@@ -290,10 +284,9 @@ export const useArcSlicer = () => {
         .rpc();
 
       logInfo(`✅ Crank turned! Slice listed via Oracle. TX: ${tx.slice(0, 8)}...`);
-      await fetchProtocolState();
+      await fetchProtocolState(false);
       
     } catch (err: any) {
-      // 2. THE SANITIZER
       const cleanError = translateError(err, "Failed to turn crank.");
       if (cleanError === "ghost") {
         console.log("Caught a ghost crank double-fire.");
@@ -301,7 +294,6 @@ export const useArcSlicer = () => {
       }
       logInfo(`❌ Crank Error: ${cleanError}`);
     } finally {
-      // 3. THE UNLOCK
       isProcessingRef.current = false;
       setIsLoading(false);
     }
@@ -355,7 +347,7 @@ export const useArcSlicer = () => {
         .rpc();
 
       logInfo(`✅ Deposit complete. TX: ${tx.slice(0, 8)}...`);
-      await fetchProtocolState();
+      await fetchProtocolState(false);
       await fetchBalances();
     } catch (err: any) {
       if (err.message && err.message.includes("already been processed")) {
@@ -371,7 +363,6 @@ export const useArcSlicer = () => {
   };
 
   const buySlice = async (slice?: MarketSlice) => {
-    // 1. THE LOCK
     if (isProcessingRef.current) return;
 
     const program = getProgram();
@@ -416,11 +407,10 @@ export const useArcSlicer = () => {
         .rpc();
 
       logInfo('🤝 SWAP COMPLETE!');
-      await fetchProtocolState();
+      await fetchProtocolState(false);
       await fetchBalances();
       
     } catch (err: any) {
-      // 2. THE SANITIZER
       const cleanError = translateError(err, "Swap failed.");
       if (cleanError === "ghost") {
         console.log("Caught a ghost swap double-fire.");
@@ -428,33 +418,36 @@ export const useArcSlicer = () => {
       }
       logInfo(`❌ Swap Error: ${cleanError}`);
     } finally {
-      // 3. THE UNLOCK
       isProcessingRef.current = false;
       setIsLoading(false);
     }
   };
 
-  // Poll intervals
+  // --- 2-SECOND POLLING INTERVALS ---
   useEffect(() => {
     fetchBalances();
-    const id = setInterval(fetchBalances, 10000);
+    const id = setInterval(fetchBalances, 2000);
     return () => clearInterval(id);
   }, [fetchBalances]);
 
   useEffect(() => {
     void fetchLiveSolPrice();
-    const id = setInterval(fetchLiveSolPrice, 6000);
+    const id = setInterval(fetchLiveSolPrice, 2000);
     return () => clearInterval(id);
   }, [fetchLiveSolPrice]);
 
   useEffect(() => {
-    fetchProtocolState();
-    const id = setInterval(fetchProtocolState, 12000);
+    fetchProtocolState(false); // First load shows spinner
+    const id = setInterval(() => {
+      fetchProtocolState(true); // Background loads silently every 2s
+    }, 2000);
     return () => clearInterval(id);
   }, [fetchProtocolState]);
 
   return {
     balances, vaultData, slices, isParentInitialized, isLoading, liveSolPrice, logs,
-    initializeVault, turnCrank, depositFunds, buySlice, refreshState: fetchProtocolState
+    initializeVault, turnCrank, depositFunds, buySlice, 
+    // THIS EXPORT FIXES ERRORS 1 & 2
+    refreshState: () => { fetchProtocolState(false); } 
   };
 };

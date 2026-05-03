@@ -13,8 +13,8 @@ import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
 import '@solana/wallet-adapter-react-ui/styles.css';
 
 const Root = () => {
-  // THE FIX: Point the frontend to the global Devnet cluster
-  const endpoint = useMemo(() => clusterApiUrl('devnet'), []);
+  // THE FIX: Pull your private RPC URL from .env, fallback to public devnet if missing
+  const endpoint = useMemo(() => import.meta.env.VITE_RPC_URL || clusterApiUrl('devnet'), []);
   
   const wallets = useMemo(() => [], []); 
 
