@@ -44,7 +44,7 @@ const translateError = (err: any, defaultMsg: string): string => {
   if (msg.includes("SliceAlreadyFilled") || msg.includes("0x1771")) return "Too slow! Someone else just bought this slice.";
   if (msg.includes("InvalidOraclePrice") || msg.includes("0x1772")) return "Oracle offline. Please try again in a moment.";
   
-  if (msg.includes("insufficient funds") || msg.includes("0x1")) return "Insufficient funds for this transaction.";
+  if (msg.includes("insufficient funds") || msg.match(/\b0x1\b/)) return "Insufficient funds for this transaction.";
   if (msg.includes("User rejected")) return "Transaction cancelled by user.";
   
   return defaultMsg;
@@ -415,8 +415,14 @@ export const useArcSlicer = () => {
         .rpc();
 
       logInfo('🤝 SWAP COMPLETE!');
+      
+      // THE FIX: Optimistically hide the slice from the UI instantly so you can't double-click it
+      setSlices(prev => prev.filter(s => s.id.toBase58() !== targetSlice.id.toBase58()));
+
+      // Give the RPC 2 seconds to index the new state before fetching balances
+      await new Promise(resolve => setTimeout(resolve, 2000));
       await fetchProtocolState(false);
-      await fetchBalances(); // Force a balance update here!
+      await fetchBalances(); 
       
     } catch (err: any) {
       const cleanError = translateError(err, "Swap failed.");
