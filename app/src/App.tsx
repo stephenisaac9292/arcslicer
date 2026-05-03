@@ -16,6 +16,9 @@ function App() {
   const { requestAirdrop, isDropping, faucetLog } = useFaucet();
 
   const [activeMode, setActiveMode] = useState<'whale' | 'buyer'>('buyer');
+  
+  // THE FIX: We have to tell React what 'depositAmount' is!
+  const [depositAmount, setDepositAmount] = useState<string>('0.1');
 
   return (
     <div className="app-shell">
@@ -114,9 +117,24 @@ function App() {
                     <button className="launch-btn setup-btn bg-purple-600 hover:bg-purple-500 text-white disabled:opacity-50" onClick={turnCrank} disabled={!isParentInitialized}>
                       2: Turn Crank (Jitter) <ArrowUpRight size={17} />
                     </button>
-                    <button className="launch-btn" onClick={() => void depositFunds(0.1)} disabled={!isParentInitialized || isLoading}>
-                      {isLoading ? 'Processing...' : '3: Deposit 0.1 wSOL'} <ArrowUpRight size={17} />
-                    </button>
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        value={depositAmount}
+                        onChange={(e) => setDepositAmount(e.target.value)}
+                        disabled={!isParentInitialized || isLoading}
+                        className="bg-gray-900 border border-gray-700 text-white rounded px-3 py-2 w-24 text-sm outline-none focus:border-purple-500 transition-colors"
+                        min="0.01"
+                        step="0.01"
+                      />
+                      <button 
+                        className="launch-btn flex-1" 
+                        onClick={() => void depositFunds(Number(depositAmount))} 
+                        disabled={!isParentInitialized || isLoading || Number(depositAmount) <= 0}
+                      >
+                        {isLoading ? 'Processing...' : `3: Deposit wSOL`} <ArrowUpRight size={17} />
+                      </button>
+                    </div>
                   </div>
                 </>
               )}
