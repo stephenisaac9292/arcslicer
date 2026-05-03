@@ -78,18 +78,31 @@ export const useArcSlicer = () => {
     return { parentStatePda, vaultPda };
   }, [wallet]);
 
+  // FIX: Anti-flicker balance fetching
   const fetchBalances = useCallback(async () => {
     if (!wallet) return;
     try {
       const lamports = await connection.getBalance(wallet.publicKey);
-      let usdcBal = 0;
+      let newUsdcBal: number | null = null; 
+
       try {
         const usdcAta = getAssociatedTokenAddressSync(USDC_MINT, wallet.publicKey);
-        const usdcAccount = await getAccount(connection, usdcAta);
-        usdcBal = Number(usdcAccount.amount) / 1e6;
-      } catch { /* Ignore if no ATA */ }
+        const accountInfo = await connection.getAccountInfo(usdcAta);
+        
+        if (accountInfo) {
+          const usdcAccount = await getAccount(connection, usdcAta);
+          newUsdcBal = Number(usdcAccount.amount) / 1e6;
+        } else {
+          newUsdcBal = 0; 
+        }
+      } catch { 
+        // Ignore network glitches to prevent UI flashing to 0
+      }
       
-      setBalances({ nativeSol: lamports / 1e9, usdc: usdcBal });
+      setBalances(prev => ({ 
+        nativeSol: lamports / 1e9, 
+        usdc: newUsdcBal !== null ? newUsdcBal : prev.usdc 
+      }));
     } catch (e) {
       console.error("Balance fetch error:", e);
     }
@@ -111,7 +124,6 @@ export const useArcSlicer = () => {
     return price;
   }, [connection]);
 
-  // THE isBackground FLAG ADDED HERE
   const fetchProtocolState = useCallback(async (isBackground = false) => {
     const program = getProgram();
     if (!program) return;
@@ -119,7 +131,6 @@ export const useArcSlicer = () => {
     const pdas = getPdas(program);
     if (!program || !pdas) return;
 
-    // ONLY SHOW SPINNER IF IT'S A MANUAL CLICK
     if (!isBackground) setIsLoading(true);
     
     try {
@@ -155,8 +166,6 @@ export const useArcSlicer = () => {
       
       setSlices(marketSlices);
 
-      // (vaultBalance line removed to fix Error 3)
-
       try {
         const state = await parentClient.fetch(pdas.parentStatePda);
         setIsParentInitialized(true);
@@ -178,7 +187,6 @@ export const useArcSlicer = () => {
     } catch (e) {
       console.error(e);
     } finally {
-      // ONLY HIDE SPINNER IF IT'S A MANUAL CLICK
       if (!isBackground) setIsLoading(false);
     }
   }, [getProgram, getPdas, connection, fetchLiveSolPrice, wallet?.publicKey]);
@@ -348,7 +356,7 @@ export const useArcSlicer = () => {
 
       logInfo(`✅ Deposit complete. TX: ${tx.slice(0, 8)}...`);
       await fetchProtocolState(false);
-      await fetchBalances();
+      await fetchBalances(); // Force a balance update here!
     } catch (err: any) {
       if (err.message && err.message.includes("already been processed")) {
         console.log("Caught a ghost double-fire. Transaction actually succeeded.");
@@ -408,7 +416,7 @@ export const useArcSlicer = () => {
 
       logInfo('🤝 SWAP COMPLETE!');
       await fetchProtocolState(false);
-      await fetchBalances();
+      await fetchBalances(); // Force a balance update here!
       
     } catch (err: any) {
       const cleanError = translateError(err, "Swap failed.");
@@ -423,23 +431,25 @@ export const useArcSlicer = () => {
     }
   };
 
-  // --- 2-SECOND POLLING INTERVALS ---
+  // --- INTERVALS ---
+  
+  // FIX: Fetch balances ONLY ONCE when wallet connects, no continuous background polling!
   useEffect(() => {
     fetchBalances();
-    const id = setInterval(fetchBalances, 2000);
-    return () => clearInterval(id);
   }, [fetchBalances]);
 
+  // Fast 2-second polling for live prices
   useEffect(() => {
     void fetchLiveSolPrice();
     const id = setInterval(fetchLiveSolPrice, 2000);
     return () => clearInterval(id);
   }, [fetchLiveSolPrice]);
 
+  // Fast 2-second polling for dark pool market state
   useEffect(() => {
-    fetchProtocolState(false); // First load shows spinner
+    fetchProtocolState(false); 
     const id = setInterval(() => {
-      fetchProtocolState(true); // Background loads silently every 2s
+      fetchProtocolState(true); 
     }, 2000);
     return () => clearInterval(id);
   }, [fetchProtocolState]);
@@ -447,7 +457,10 @@ export const useArcSlicer = () => {
   return {
     balances, vaultData, slices, isParentInitialized, isLoading, liveSolPrice, logs,
     initializeVault, turnCrank, depositFunds, buySlice, 
-    // THIS EXPORT FIXES ERRORS 1 & 2
-    refreshState: () => { fetchProtocolState(false); } 
+    // FIX: Manual Sync button now updates BOTH the vault state AND the wallet balances
+    refreshState: () => { 
+      fetchProtocolState(false); 
+      fetchBalances(); 
+    } 
   };
 };
