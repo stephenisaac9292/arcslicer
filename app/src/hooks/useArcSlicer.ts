@@ -35,6 +35,26 @@ const parsePythSolPrice = (data: Buffer) => {
   return price > 0 ? price * 10 ** expo : null;
 };
 
+// Add this outside/above your useArcSlicer hook
+const translateError = (err: any, defaultMsg: string): string => {
+  const msg = err?.message || String(err);
+  
+  // 1. The Ghost Catch
+  if (msg.includes("already been processed") || msg.includes("blockhash not found")) return "ghost";
+  
+  // 2. Custom Anchor Errors (Matches your SlicerError enum in Rust)
+  if (msg.includes("VaultEmpty") || msg.includes("0x1770")) return "The Vault is empty. Wait for the Whale to deposit.";
+  if (msg.includes("SliceAlreadyFilled") || msg.includes("0x1771")) return "Too slow! Someone else just bought this slice.";
+  if (msg.includes("InvalidOraclePrice") || msg.includes("0x1772")) return "Oracle offline. Please try again in a moment.";
+  
+  // 3. Standard Solana Errors
+  if (msg.includes("insufficient funds") || msg.includes("0x1")) return "Insufficient funds for this transaction.";
+  if (msg.includes("User rejected")) return "Transaction cancelled by user.";
+  
+  // Fallback
+  return defaultMsg;
+};
+
 export const useArcSlicer = () => {
   const { connection } = useConnection();
   const wallet = useAnchorWallet();
@@ -217,13 +237,17 @@ export const useArcSlicer = () => {
   };
 
   const turnCrank = async () => {
+    // 1. THE LOCK
+    if (isProcessingRef.current) return;
+    
     const program = getProgram();
     const publicKey = wallet?.publicKey;
     if (!program || !publicKey) return logInfo('❌ Wallet not connected');
 
     try {
-      logInfo('⚙️ Cranking engine... Blockchain is fetching live Pyth price...');
+      isProcessingRef.current = true;
       setIsLoading(true);
+      logInfo('⚙️ Cranking engine... Blockchain is fetching live Pyth price...');
 
       const [parentStatePda] = PublicKey.findProgramAddressSync(
         [Buffer.from('parent'), publicKey.toBuffer()],
@@ -262,10 +286,18 @@ export const useArcSlicer = () => {
 
       logInfo(`✅ Crank turned! Slice listed via Oracle. TX: ${tx.slice(0, 8)}...`);
       await fetchProtocolState();
+      
     } catch (err: any) {
-      console.error(err);
-      logInfo(`❌ Crank Error: ${err.message}`);
+      // 2. THE SANITIZER
+      const cleanError = translateError(err, "Failed to turn crank.");
+      if (cleanError === "ghost") {
+        console.log("Caught a ghost crank double-fire.");
+        return; 
+      }
+      logInfo(`❌ Crank Error: ${cleanError}`);
     } finally {
+      // 3. THE UNLOCK
+      isProcessingRef.current = false;
       setIsLoading(false);
     }
   };
@@ -334,6 +366,9 @@ export const useArcSlicer = () => {
   };
 
   const buySlice = async (slice?: MarketSlice) => {
+    // 1. THE LOCK
+    if (isProcessingRef.current) return;
+
     const program = getProgram();
     if (!program || !wallet?.publicKey) return logInfo('❌ Wallet not connected');
 
@@ -341,8 +376,9 @@ export const useArcSlicer = () => {
     if (!targetSlice) return logInfo('❌ No active slices.');
 
     try {
-      logInfo('🛒 Executing swap... Pyth will re-price this slice on-chain.');
+      isProcessingRef.current = true;
       setIsLoading(true);
+      logInfo('🛒 Executing swap... Pyth will re-price this slice on-chain.');
 
       const buyerPublicKey = wallet.publicKey;
       const buyerWsolAta = getAssociatedTokenAddressSync(WSOL_MINT, buyerPublicKey);
@@ -377,9 +413,18 @@ export const useArcSlicer = () => {
       logInfo('🤝 SWAP COMPLETE!');
       await fetchProtocolState();
       await fetchBalances();
+      
     } catch (err: any) {
-      logInfo(`❌ Swap Error: ${err.message}`);
+      // 2. THE SANITIZER
+      const cleanError = translateError(err, "Swap failed.");
+      if (cleanError === "ghost") {
+        console.log("Caught a ghost swap double-fire.");
+        return; 
+      }
+      logInfo(`❌ Swap Error: ${cleanError}`);
     } finally {
+      // 3. THE UNLOCK
+      isProcessingRef.current = false;
       setIsLoading(false);
     }
   };
