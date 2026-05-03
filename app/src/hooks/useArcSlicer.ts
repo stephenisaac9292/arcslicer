@@ -154,7 +154,12 @@ export const useArcSlicer = () => {
           } satisfies MarketSlice;
         }),
       );
-      setSlices(enrichedSlices);
+      // Filter out slices owned by the currently connected wallet
+      const marketSlices = enrichedSlices.filter(
+        (slice) => slice.whaleOwnerPubkey.toBase58() !== wallet?.publicKey?.toBase58()
+      );
+      
+      setSlices(marketSlices);
 
       const vaultBalance = await connection.getTokenAccountBalance(pdas.vaultPda).catch(() => ({ value: { uiAmount: 0 } }));
       try {
