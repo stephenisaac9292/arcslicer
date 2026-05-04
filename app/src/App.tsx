@@ -20,14 +20,6 @@ function App() {
   // THE FIX: We have to tell React what 'depositAmount' is!
   const [depositAmount, setDepositAmount] = useState<string>('0.1');
 
-  // THE FIX: A wrapper that fires the faucet, waits 2 seconds for RPC indexing, then auto-syncs!
-  const handleFaucetDrop = async () => {
-    await requestAirdrop();
-    setTimeout(() => {
-      refreshState();
-    }, 2000);
-  };
-
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -89,7 +81,7 @@ function App() {
                       <p className="text-xs text-gray-400">Need funds? Get Gas, wSOL, and USDC.</p>
                     </div>
                     <button
-                      onClick={handleFaucetDrop} // Point this to the new wrapper
+                      onClick={requestAirdrop}
                       disabled={isDropping}
                       className="bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 text-white text-xs px-4 py-2 rounded font-bold transition-colors"
                     >
