@@ -8,3 +8,5 @@ test-ledger
 .surfpool
 .env
 .vercel
+.codex
+SESSION_SUMMARY.md
