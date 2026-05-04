@@ -39,12 +39,10 @@ const translateError = (err: any, defaultMsg: string): string => {
   const msg = err?.message || String(err);
   
   if (msg.includes("already been processed") || msg.includes("blockhash not found")) return "ghost";
-  
-  if (msg.includes("VaultEmpty") || msg.includes("0x1770")) return "The Vault is empty. Wait for the Whale to deposit.";
-  if (msg.includes("SliceAlreadyFilled") || msg.includes("0x1771")) return "Too slow! Someone else just bought this slice.";
-  if (msg.includes("InvalidOraclePrice") || msg.includes("0x1772")) return "Oracle offline. Please try again in a moment.";
-  
-  if (msg.includes("insufficient funds") || msg.includes("0x1")) return "Insufficient funds for this transaction.";
+  if (msg.includes("VaultEmpty") || msg.includes("0x1770")) return "Vault is empty. Awaiting deposit.";
+  if (msg.includes("SliceAlreadyFilled") || msg.includes("0x1771")) return "Slice already filled by another user.";
+  if (msg.includes("InvalidOraclePrice") || msg.includes("0x1772")) return "Oracle offline. Retry pending.";
+  if (msg.includes("insufficient funds") || msg.match(/\b0x1\b/)) return "Insufficient funds for this transaction.";
   if (msg.includes("User rejected")) return "Transaction cancelled by user.";
   
   return defaultMsg;
@@ -78,7 +76,6 @@ export const useArcSlicer = () => {
     return { parentStatePda, vaultPda };
   }, [wallet]);
 
-  // FIX: Anti-flicker balance fetching
   const fetchBalances = useCallback(async () => {
     if (!wallet) return;
     try {
@@ -96,7 +93,7 @@ export const useArcSlicer = () => {
           newUsdcBal = 0; 
         }
       } catch { 
-        // Ignore network glitches to prevent UI flashing to 0
+        // Suppress expected network lag errors
       }
       
       setBalances(prev => ({ 
@@ -194,10 +191,10 @@ export const useArcSlicer = () => {
   const initializeVault = async () => {
     const program = getProgram();
     const publicKey = wallet?.publicKey;
-    if (!program || !publicKey) return logInfo('❌ Wallet not connected');
+    if (!program || !publicKey) return logInfo('Wallet not connected.');
 
     try {
-      logInfo('🔒 Locking wSOL into ArcSlicer Escrow...');
+      logInfo('Initializing vault protocol.');
       setIsLoading(true);
 
       const [parentStatePda] = PublicKey.findProgramAddressSync(
@@ -218,8 +215,8 @@ export const useArcSlicer = () => {
 
       const tx = await program.methods
         .initializeSlicer(
-          new anchor.BN(100_000_000),
-          1
+          new anchor.BN(100_000_000), 
+          1 
         )
         .accounts({
           whale: publicKey,
@@ -234,11 +231,11 @@ export const useArcSlicer = () => {
         } as any)
         .rpc();
 
-      logInfo(`✅ Vault Initialized! TX: ${tx.slice(0, 8)}...`);
+      logInfo(`Vault initialized. TX: ${tx.slice(0, 8)}...`);
       await fetchProtocolState(false);
     } catch (err: any) {
       console.error(err);
-      logInfo(`❌ Error: ${err.message}`);
+      logInfo(`Error: ${err.message}`);
     } finally {
       setIsLoading(false);
     }
@@ -249,12 +246,12 @@ export const useArcSlicer = () => {
     
     const program = getProgram();
     const publicKey = wallet?.publicKey;
-    if (!program || !publicKey) return logInfo('❌ Wallet not connected');
+    if (!program || !publicKey) return logInfo('Wallet not connected.');
 
     try {
       isProcessingRef.current = true;
       setIsLoading(true);
-      logInfo('⚙️ Cranking engine... Blockchain is fetching live Pyth price...');
+      logInfo('Executing crank. Fetching oracle state.');
 
       const [parentStatePda] = PublicKey.findProgramAddressSync(
         [Buffer.from('parent'), publicKey.toBuffer()],
@@ -291,16 +288,15 @@ export const useArcSlicer = () => {
         } as any)
         .rpc();
 
-      logInfo(`✅ Crank turned! Slice listed via Oracle. TX: ${tx.slice(0, 8)}...`);
+      logInfo(`Crank executed. Slice listed. TX: ${tx.slice(0, 8)}...`);
       await fetchProtocolState(false);
       
     } catch (err: any) {
-      const cleanError = translateError(err, "Failed to turn crank.");
+      const cleanError = translateError(err, "Failed to execute crank.");
       if (cleanError === "ghost") {
-        console.log("Caught a ghost crank double-fire.");
         return; 
       }
-      logInfo(`❌ Crank Error: ${cleanError}`);
+      logInfo(`Crank error: ${cleanError}`);
     } finally {
       isProcessingRef.current = false;
       setIsLoading(false);
@@ -311,16 +307,16 @@ export const useArcSlicer = () => {
     if (isProcessingRef.current) return;
     const program = getProgram();
     const publicKey = wallet?.publicKey;
-    if (!program || !publicKey) return logInfo('❌ Wallet not connected');
+    if (!program || !publicKey) return logInfo('Wallet not connected.');
 
     try {
       isProcessingRef.current = true;
       setIsLoading(true);
 
       const amountLamports = Math.floor(amountSol * 1_000_000_000);
-      if (amountLamports <= 0) return logInfo('❌ Invalid deposit amount');
+      if (amountLamports <= 0) return logInfo('Invalid deposit amount.');
 
-      logInfo(`💧 Depositing ${amountSol.toFixed(3)} wSOL into vault...`);
+      logInfo(`Depositing ${amountSol.toFixed(3)} wSOL.`);
 
       const [parentStatePda] = PublicKey.findProgramAddressSync(
         [Buffer.from('parent'), publicKey.toBuffer()],
@@ -354,16 +350,17 @@ export const useArcSlicer = () => {
         } as any)
         .rpc();
 
-      logInfo(`✅ Deposit complete. TX: ${tx.slice(0, 8)}...`);
+      logInfo(`Deposit complete. TX: ${tx.slice(0, 8)}...`);
       await fetchProtocolState(false);
-      await fetchBalances(); // Force a balance update here!
+      
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      await fetchBalances(); 
     } catch (err: any) {
       if (err.message && err.message.includes("already been processed")) {
-        console.log("Caught a ghost double-fire. Transaction actually succeeded.");
         return;
       }
       console.error(err);
-      logInfo(`❌ Deposit Error: ${err.message}`);
+      logInfo(`Deposit error: ${err.message}`);
     } finally {
       isProcessingRef.current = false;
       setIsLoading(false);
@@ -374,15 +371,15 @@ export const useArcSlicer = () => {
     if (isProcessingRef.current) return;
 
     const program = getProgram();
-    if (!program || !wallet?.publicKey) return logInfo('❌ Wallet not connected');
+    if (!program || !wallet?.publicKey) return logInfo('Wallet not connected.');
 
     const targetSlice = slice ?? slices[0];
-    if (!targetSlice) return logInfo('❌ No active slices.');
+    if (!targetSlice) return logInfo('No active slices available.');
 
     try {
       isProcessingRef.current = true;
       setIsLoading(true);
-      logInfo('🛒 Executing swap... Pyth will re-price this slice on-chain.');
+      logInfo('Executing swap. Verifying oracle state.');
 
       const buyerPublicKey = wallet.publicKey;
       const buyerWsolAta = getAssociatedTokenAddressSync(WSOL_MINT, buyerPublicKey);
@@ -414,41 +411,37 @@ export const useArcSlicer = () => {
         })
         .rpc();
 
-      logInfo('🤝 SWAP COMPLETE!');
+      logInfo('Swap complete.');
+      
+      setSlices(prev => prev.filter(s => s.id.toBase58() !== targetSlice.id.toBase58()));
+
       await fetchProtocolState(false);
       
-      // THE FIX: Give the RPC 1.5 seconds to index the new state before fetching
       await new Promise(resolve => setTimeout(resolve, 1500));
       await fetchBalances(); 
       
     } catch (err: any) {
-      const cleanError = translateError(err, "Swap failed.");
+      const cleanError = translateError(err, "Swap execution failed.");
       if (cleanError === "ghost") {
-        console.log("Caught a ghost swap double-fire.");
         return; 
       }
-      logInfo(`❌ Swap Error: ${cleanError}`);
+      logInfo(`Swap error: ${cleanError}`);
     } finally {
       isProcessingRef.current = false;
       setIsLoading(false);
     }
   };
 
-  // --- INTERVALS ---
-  
-  // FIX: Fetch balances ONLY ONCE when wallet connects, no continuous background polling!
   useEffect(() => {
     fetchBalances();
   }, [fetchBalances]);
 
-  // Fast 2-second polling for live prices
   useEffect(() => {
     void fetchLiveSolPrice();
     const id = setInterval(fetchLiveSolPrice, 2000);
     return () => clearInterval(id);
   }, [fetchLiveSolPrice]);
 
-  // Fast 2-second polling for dark pool market state
   useEffect(() => {
     fetchProtocolState(false); 
     const id = setInterval(() => {
@@ -460,7 +453,6 @@ export const useArcSlicer = () => {
   return {
     balances, vaultData, slices, isParentInitialized, isLoading, liveSolPrice, logs,
     initializeVault, turnCrank, depositFunds, buySlice, 
-    // FIX: Manual Sync button now updates BOTH the vault state AND the wallet balances
     refreshState: () => { 
       fetchProtocolState(false); 
       fetchBalances(); 
