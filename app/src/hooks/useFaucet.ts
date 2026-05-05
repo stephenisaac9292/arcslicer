@@ -43,7 +43,7 @@ export const useFaucet = () => {
       );
 
       // ==========================================
-      // PART 2: PRINT THE USDC (2,000)
+      // PART 2: PRINT THE USDC (500)
       // ==========================================
       const userUsdcAta = getAssociatedTokenAddressSync(USDC_MINT, publicKey);
       const usdcAtaInfo = await connection.getAccountInfo(userUsdcAta);
@@ -61,7 +61,7 @@ export const useFaucet = () => {
 
       tx.add(
         createMintToInstruction(
-          USDC_MINT, userUsdcAta, funderKeypair.publicKey, 2000 * 1_000_000
+          USDC_MINT, userUsdcAta, funderKeypair.publicKey, 500 * 1_000_000
         )
       );
       // ==========================================
